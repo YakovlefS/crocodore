@@ -24,8 +24,15 @@ THREAD_ID = int(os.getenv("THREAD_ID", "0"))   # id темы (message_thread_id)
 if not BOT_TOKEN:
     raise SystemExit("Не задан BOT_TOKEN")
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+from aiogram.client.default import DefaultBotProperties
+
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode="HTML")
+)
+
 dp = Dispatcher()
+
 
 # ---------- СОСТОЯНИЕ ИГРЫ ----------
 game = {
