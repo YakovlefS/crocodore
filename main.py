@@ -64,8 +64,8 @@ scores: dict[int, int] = {}
 # ---------- УТИЛИТЫ ----------
 
 def normalize(text: str) -> str:
-    """Приводим строку к виду для сравнения (убираем пробелы, регистр и т.п.)."""
-    return "".join(ch.lower() for ch in text if not ch.isspace())
+    """Приводим строку к виду для сравнения, оставляя только буквы."""
+    return "".join(ch.lower() for ch in text if ch.isalpha())
 
 
 def mention(user) -> str:
@@ -353,6 +353,16 @@ async def game_messages(message: Message):
 
     guess = normalize(message.text)
     answer = normalize(game["word"])
+    
+    if answer not in guess:
+        game["attempts"] += 1
+    if game["attempts"] == 10:
+        await message.answer(
+            "😅 Много неверных ответов. "
+            "Ведущий может выдать подсказку командой /hint."
+        )
+    return
+    
 
     if not guess:
         return
