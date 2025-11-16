@@ -33,6 +33,21 @@ bot = Bot(
 
 dp = Dispatcher()
 
+from aiogram.types import BotCommand
+
+async def setup_bot_commands(bot: Bot):
+    commands = [
+        BotCommand(command="start", description="Описание бота и команд"),
+        BotCommand(command="startgame", description="Начать игру и стать ведущим"),
+        BotCommand(command="score", description="Показать общий рейтинг игроков"),
+        BotCommand(command="top", description="Показать топ-10 игроков"),
+        BotCommand(command="hint", description="Подсказка (доступно ведущему)"),
+        BotCommand(command="resetgame", description="Сбросить игру и рейтинг (админ)"),
+        BotCommand(command="info", description="Показать chat_id и thread_id"),
+    ]
+
+    await bot.set_my_commands(commands)
+
 
 # ---------- СОСТОЯНИЕ ИГРЫ ----------
 game = {
