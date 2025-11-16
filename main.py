@@ -2,6 +2,7 @@ import os
 import logging
 import random
 import asyncio
+import re
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
@@ -337,6 +338,44 @@ async def guessing(message: Message):
         f"👉 Новый ведущий: {mention(message.from_user)}",
         reply_markup=leader_keyboard(uid)
     )
+
+@dp.message_handler()
+async def handle_guess(message: types.Message):
+    if message.chat.type not in (ChatType.GROUP, ChatType.SUPERGROUP):
+        return
+
+    if not message.text:
+        return
+
+    # нормализация текста
+    text = re.sub(r"[^а-яa-z0-9ё]", " ", message.text.lower())
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return
+
+    game = await get_active_game(message.chat.id)
+    if not game or not game[5]:
+        return
+
+    chat_id, leader_id, leader_username, word, started_at, active = game
+
+    # нормализуем загаданное слово
+    word_normalized = re.sub(r"[^а-яa-z0-9ё]", "", word.lower())
+
+    # проверка вхождения как отдельного слова или полностью
+    if text == word_normalized or f" {word_normalized} " in f" {text} ":
+        await add_point(message.chat.id, message.from_user)
+
+        winner_mention = message.from_user.get_mention(as_html=True)
+        await message.reply(
+            f"Правильно! Слово было: <b>{word}</b>\n"
+            f"Очко получает {winner_mention}.\n"
+            "Следующий раунд начался — новое слово отправлено в личку.",
+            parse_mode="HTML",
+        )
+
+        await start_new_round(message.chat, message.from_user)
 
 
 # ========= ЗАПУСК =========
