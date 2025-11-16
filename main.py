@@ -1,551 +1,385 @@
-"""Telegram-бот с игрой "Крокодил" на базе aiogram."""
-
-from __future__ import annotations
-
-import asyncio
-import logging
 import os
+import logging
 import random
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+import asyncio
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
+from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import (
-    BotCommand,
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Message,
-    User,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BotCommand,
 )
+from aiogram.client.default import DefaultBotProperties
 
-# ================== НАСТРОЙКА ЛОГИРОВАНИЯ ==================
+# ========= ЛОГИ =========
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================== НАСТРОЙКА ОКРУЖЕНИЯ ==================
+# ========= ENV =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID", "0"))
-THREAD_ID = int(os.getenv("THREAD_ID", "0"))
+CHAT_ID = int(os.getenv("CHAT_ID", "0"))      # id чата (supergroup)
+THREAD_ID = int(os.getenv("THREAD_ID", "0"))  # id темы (message_thread_id)
 
 if not BOT_TOKEN:
-    raise SystemExit("❌ BOT_TOKEN не задан")
+    raise SystemExit("BOT_TOKEN не задан")
 
-# Создаём экземпляры бота и диспетчера сразу, чтобы хэндлеры могли ими пользоваться
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+# ========= BOT / DP =========
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode="HTML")
+)
 dp = Dispatcher()
 
+# ========= СОСТОЯНИЕ ИГРЫ =========
+game = {
+    "active": False,
+    "word": None,
+    "leader_id": None,
+    "attempts": 0,
+}
 
-# ================== ДАТАКЛАССЫ ==================
-@dataclass
-class GameState:
-    """Хранит состояние текущего раунда."""
-
-    active: bool = False
-    word: Optional[str] = None
-    leader_id: Optional[int] = None
-    leader_name: Optional[str] = None
-    attempts: int = 0
-    hint_level: int = 0
-    max_hints: int = 4
-    auto_hint_step: int = 6
-    revealed_positions: Set[int] = field(default_factory=set)
-
-    def reset(self) -> None:
-        """Полностью очищает состояние игры."""
-
-        self.active = False
-        self.word = None
-        self.leader_id = None
-        self.leader_name = None
-        self.attempts = 0
-        self.hint_level = 0
-        self.revealed_positions.clear()
-
-    def start_round(self, word: str, leader: User) -> None:
-        """Настраивает параметры нового раунда."""
-
-        self.active = True
-        self.word = word
-        self.leader_id = leader.id
-        self.leader_name = leader.full_name or leader.username or "игрок"
-        self.attempts = 0
-        self.hint_level = 0
-        self.revealed_positions.clear()
+# user_id -> очки
+scores: dict[int, int] = {}
 
 
-@dataclass
-class ScoreRecord:
-    """Хранит очки игрока."""
-
-    points: int = 0
-    name: str = "игрок"
-
-
-game = GameState()
-scores: Dict[int, ScoreRecord] = {}
-
-# ================== КОНСТАНТЫ ==================
-VOWELS = set("аеёиоуыэюяaeiouy")
-ATTEMPTS_NOTIFY_STEP = 5
-
-
-# ================== УТИЛИТЫ ==================
-def sanitize_name(name: str) -> str:
-    """Удаляет потенциально опасные символы из имён."""
-
-    return name.replace("<", "").replace(">", "")
-
-
-def mention(user: User) -> str:
-    """Создаёт HTML-ссылку на пользователя."""
-
-    name = sanitize_name(user.full_name or user.username or "игрок")
-    return f'<a href="tg://user?id={user.id}">{name}</a>'
-
-
-def mention_from_record(uid: int, record: ScoreRecord) -> str:
-    """Создаёт HTML-ссылку по сохранённому рекорду."""
-
-    name = sanitize_name(record.name or "игрок")
-    return f'<a href="tg://user?id={uid}">{name}</a>'
-
+# ========= УТИЛИТЫ =========
 
 def normalize(text: str) -> str:
-    """Оставляет только буквы и приводит их к нижнему регистру."""
-
+    """Очищаем строку от всего, кроме букв, приводим к нижнему регистру."""
     return "".join(ch.lower() for ch in text if ch.isalpha())
 
 
-def in_target_topic(message: Message) -> bool:
-    """Проверяет, что сообщение пришло из нужного чата/темы."""
+def mention(user) -> str:
+    """Красивое упоминание пользователя."""
+    name = (user.full_name or "игрок").replace("<", "").replace(">", "")
+    return f'<a href="tg://user?id={user.id}">{name}</a>'
 
+
+def in_target_topic(message: Message) -> bool:
+    """
+    Бот реагирует только:
+    - в нужном чате
+    - в нужной теме (если THREAD_ID != 0)
+    """
     if not message.chat or message.chat.id != CHAT_ID:
         return False
 
+    # если тема не задана — реагируем везде в этом чате
     if THREAD_ID == 0:
         return True
 
+    # если Telegram прислал message_thread_id — сверяем
     thread = getattr(message, "message_thread_id", None)
     if thread is not None:
         return thread == THREAD_ID
 
-    # Telegram иногда не отправляет идентификатор темы, поэтому считаем, что всё ок
-    return True
+    # на всякий случай (редкий кейс, когда thread_id не приходит)
+    return False
 
 
 async def is_admin(user_id: int) -> bool:
-    """Проверяет, является ли пользователь администратором чата."""
-
+    """Проверка на администратора чата."""
     try:
         member = await bot.get_chat_member(CHAT_ID, user_id)
         return member.status in ("creator", "administrator", "owner")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Не удалось проверить админа: {e}")
         return False
 
 
-async def load_words() -> List[str]:
-    """Загружает список слов из файла."""
-
+async def load_words() -> list[str]:
+    """Загрузка слов из words.txt (одно слово в строке)."""
     try:
-        with open("words.txt", "r", encoding="utf-8") as file:
-            return [word.strip().lower() for word in file if word.strip()]
-    except Exception:
-        # На случай отсутствия файла возвращаем набор запасных слов
-        return ["крокодил", "машина", "лампа", "река"]
+        with open("words.txt", "r", encoding="utf-8") as f:
+            words = [w.strip().lower() for w in f if w.strip()]
+        if not words:
+            raise ValueError("words.txt пуст")
+        return words
+    except Exception as e:
+        logger.warning(f"Ошибка чтения words.txt: {e}")
+        # fallback на базовый список
+        return ["крокодил", "машина", "лампа", "река", "дерево"]
 
 
 def leader_keyboard(leader_id: int) -> InlineKeyboardMarkup:
-    """Создаёт клавиатуру с действиями ведущего."""
-
+    """Кнопки ведущего."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="👁 Показать слово", callback_data=f"show:{leader_id}"),
-                InlineKeyboardButton(text="🔄 Новое слово", callback_data=f"replace:{leader_id}"),
+                InlineKeyboardButton(
+                    text="👁 Показать слово",
+                    callback_data=f"show:{leader_id}",
+                ),
+                InlineKeyboardButton(
+                    text="🔄 Новое слово",
+                    callback_data=f"replace:{leader_id}",
+                ),
             ],
             [
-                InlineKeyboardButton(text="⛔ Остановить игру", callback_data=f"stop:{leader_id}"),
+                InlineKeyboardButton(
+                    text="⛔ Остановить игру",
+                    callback_data=f"stop:{leader_id}",
+                )
             ],
         ]
     )
 
 
-def format_rating(limit: Optional[int] = None) -> str:
-    """Возвращает таблицу рейтинга в виде текста."""
-
-    if not scores:
-        return ""
-
-    sorted_scores = sorted(scores.items(), key=lambda item: item[1].points, reverse=True)
-    if limit is not None:
-        sorted_scores = sorted_scores[:limit]
-
-    lines = [
-        f"{position}. {mention_from_record(uid, record)} — {record.points}"
-        for position, (uid, record) in enumerate(sorted_scores, start=1)
-    ]
-    return "\n".join(lines)
-
-
-def compute_revealed_positions(word: str, level: int) -> Set[int]:
-    """Определяет индексы букв, которые должны быть показаны при подсказке."""
-
-    level = max(0, min(level, game.max_hints))
-    length = len(word)
-    positions: Set[int] = set()
-
-    if level >= 1 and length > 0:
-        positions.add(0)
-    if level >= 2 and length > 1:
-        positions.add(length - 1)
-    if level >= 3:
-        positions.update(idx for idx, char in enumerate(word.lower()) if char in VOWELS)
-    if level >= 4:
-        positions.update(range(0, length, 2))
-
-    return positions
-
-
-def format_hint(word: str, level: int) -> str:
-    """Собирает текст подсказки в зависимости от уровня."""
-
-    if level <= 0:
-        return f"Слово из {len(word)} букв."
-
-    positions = compute_revealed_positions(word, level)
-    hint_chars = [char if idx in positions else "_" for idx, char in enumerate(word)]
-
-    descriptions = {
-        1: "Открыта первая буква.",
-        2: "Открыты первая и последняя буквы.",
-        3: "Показаны все гласные.",
-        4: "Подсвечена половина букв.",
-    }
-    description = descriptions.get(level, "Подсказка обновлена.")
-
-    return f"{description}\n<code>{' '.join(hint_chars)}</code>"
-
-
-async def notify_leader(word: str, leader: User) -> None:
-    """Отправляет ведущему слово в личные сообщения."""
-
-    text = (
-        "🤫 <b>Вы — ведущий раунда!</b>\n"
-        "Вот ваше слово:\n"
-        f"<b>{word}</b>\n\n"
-        "Используйте кнопки под сообщением в чате, чтобы подсмотреть или сменить слово.\n"
-        "Команда /hint выдаёт подсказку игрокам."
-    )
-    try:
-        await bot.send_message(leader.id, text)
-    except Exception:
-        logger.warning("Не удалось отправить слово ведущему", exc_info=True)
-
-
-def add_score(user: User) -> int:
-    """Добавляет игроку одно очко и возвращает новое количество очков."""
-
-    record = scores.get(user.id)
-    if not record:
-        record = ScoreRecord(points=0, name=user.full_name or user.username or "игрок")
-        scores[user.id] = record
-    record.points = 1
-    record.name = user.full_name or record.name
-    return record.points
-
-
-def build_status_message(include_hint: bool = True) -> str:
-    """Формирует текстовое описание текущего раунда."""
-
-    if not game.active or not game.word:
-        return "Сейчас игра не запущена."
-
-    lines = ["📢 <b>Состояние раунда</b>"]
-    if game.leader_name:
-        lines.append(f"Ведущий: {sanitize_name(game.leader_name)}")
-    lines.append(f"Попыток: {game.attempts}")
-
-    if include_hint:
-        lines.append(format_hint(game.word, game.hint_level))
-    else:
-        lines.append(f"Слово из {len(game.word)} букв.")
-
-    return "\n".join(lines)
-
-
-async def maybe_auto_hint(message: Message) -> None:
-    """Автоматически повышает уровень подсказки после N попыток."""
-
-    if not game.active or not game.word:
-        return
-
-    desired_level = min(game.max_hints, game.attempts // game.auto_hint_step)
-    if desired_level <= game.hint_level:
-        return
-
-    game.hint_level = desired_level
-    hint = format_hint(game.word, game.hint_level)
-    await message.answer(f"🤖 Авто-подсказка #{game.hint_level}:\n{hint}")
-
-
-async def send_status(message: Message) -> None:
-    """Отправляет сообщение о статусе игры."""
-
-    await message.answer(build_status_message())
-
-
-async def setup_bot_commands(bot_instance: Bot) -> None:
-    """Настраивает список команд в меню Telegram."""
-
+async def setup_bot_commands(bot: Bot):
+    """Регистрируем команды бота в Telegram."""
     commands = [
         BotCommand(command="start", description="Описание бота"),
-        BotCommand(command="startgame", description="Начать игру"),
-        BotCommand(command="status", description="Статус текущего раунда"),
-        BotCommand(command="score", description="Рейтинг игроков"),
+        BotCommand(command="startgame", description="Начать игру и стать ведущим"),
+        BotCommand(command="score", description="Общий рейтинг игроков"),
         BotCommand(command="top", description="Топ-10 игроков"),
-        BotCommand(command="hint", description="Подсказка (ведущий)"),
-        BotCommand(command="resetgame", description="Сброс игры (админ)"),
+        BotCommand(command="hint", description="Подсказка (только ведущий)"),
+        BotCommand(command="resetgame", description="Сброс игры и очков (админ)"),
         BotCommand(command="info", description="Показать chat_id и thread_id"),
     ]
+    await bot.set_my_commands(commands)
 
-    await bot_instance.set_my_commands(commands)
 
+# ========= КОМАНДЫ =========
 
-# ================== ХЭНДЛЕРЫ КОМАНД ==================
 @dp.message(Command("start"))
-async def cmd_start(message: Message) -> None:
-    """Приветствует пользователя."""
-
+async def cmd_start(message: Message):
     await message.answer(
-        "🐊 <b>Крокодил Бот на связи!</b>\n\n"
-        "Используйте /startgame, чтобы стать ведущим.\n"
-        "Ведущий получает слово в личку и может давать подсказки командой /hint.\n"
-        "Команда /status покажет текущий прогресс раунда.\n"
-        "Очки начисляются за каждое угаданное слово — смотрите /score и /top."
+        "🐊 <b>Крокодил бот</b>\n\n"
+        "/startgame — начать игру и стать ведущим\n"
+        "/score — рейтинг игроков\n"
+        "/top — топ-10\n"
+        "/hint — подсказка (ведущий)\n"
+        "/resetgame — сброс (админ)\n"
+        "/info — chat_id & thread_id\n"
     )
 
 
 @dp.message(Command("info"))
-async def cmd_info(message: Message) -> None:
-    """Показывает идентификаторы чата и темы."""
-
-    thread = getattr(message, "message_thread_id", None)
+async def cmd_info(message: Message):
     await message.answer(
         f"<b>chat_id:</b> <code>{message.chat.id}</code>\n"
-        f"<b>thread_id:</b> <code>{thread}</code>"
+        f"<b>thread_id:</b> <code>{getattr(message, 'message_thread_id', None)}</code>"
     )
-
-
-@dp.message(Command("status"))
-async def cmd_status(message: Message) -> None:
-    """Отправляет информацию о текущей игре."""
-
-    if not in_target_topic(message):
-        return
-    await send_status(message)
-
-
-async def launch_round(message: Message, leader: User) -> None:
-    """Запускает новый раунд и уведомляет ведущего."""
-
-    words = await load_words()
-    word = random.choice(words)
-    game.start_round(word, leader)
-
-    await message.answer(
-        f"🎮 Раунд запущен! Ведущий: {mention(leader)}\n"
-        "Слово отправлено в личку ведущему.",
-        reply_markup=leader_keyboard(leader.id),
-    )
-    await notify_leader(word, leader)
 
 
 @dp.message(Command("startgame"))
-async def cmd_startgame(message: Message) -> None:
-    """Стартует игру, если она ещё не идёт."""
-
+async def cmd_startgame(message: Message):
     if not in_target_topic(message):
         return
 
-    if game.active:
-        await message.answer("⚠️ Игра уже идёт. Используйте /status, чтобы посмотреть прогресс.")
+    if game["active"]:
+        await message.answer("⚠️ Игра уже идёт. Сначала остановите её или доиграйте раунд.")
         return
 
-    await launch_round(message, message.from_user)
+    words = await load_words()
+    leader = message.from_user
+
+    game["active"] = True
+    game["leader_id"] = leader.id
+    game["word"] = random.choice(words)
+    game["attempts"] = 0
+
+    await message.answer(
+        f"🎮 Новый раунд!\nВедущий: {mention(leader)}",
+        reply_markup=leader_keyboard(leader.id),
+    )
 
 
 @dp.message(Command("score"))
-async def cmd_score(message: Message) -> None:
-    """Показывает рейтинг всех игроков."""
-
+async def cmd_score(message: Message):
     if not in_target_topic(message):
         return
 
-    rating = format_rating()
-    if not rating:
-        await message.answer("📊 Пока нет очков.")
+    if not scores:
+        await message.answer("📊 Пока ещё никто не набрал очков.")
         return
 
-    await message.answer("📊 <b>Рейтинг:</b>\n"  rating)
+    rating = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    lines = [
+        f"{i+1}. <code>{uid}</code> — {pts}"
+        for i, (uid, pts) in enumerate(rating)
+    ]
+    await message.answer("📊 <b>Рейтинг игроков:</b>\n" + "\n".join(lines))
 
 
 @dp.message(Command("top"))
-async def cmd_top(message: Message) -> None:
-    """Показывает топ-10 игроков."""
-
+async def cmd_top(message: Message):
     if not in_target_topic(message):
         return
 
-    rating = format_rating(limit=10)
-    if not rating:
-        await message.answer("🏆 Тут пока пусто.")
+    if not scores:
+        await message.answer("🏆 Топ пуст — ещё никто не играл.")
         return
 
-    await message.answer("🏆 <b>Топ-10:</b>\n"  rating)
+    rating = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:10]
+    lines = [
+        f"{i+1}. <code>{uid}</code> — {pts}"
+        for i, (uid, pts) in enumerate(rating)
+    ]
+    await message.answer("🏆 <b>Топ-10 игроков:</b>\n" + "\n".join(lines))
 
 
 @dp.message(Command("resetgame"))
-async def cmd_reset(message: Message) -> None:
-    """Сбрасывает игру и очки (только для админов)."""
-
+async def cmd_resetgame(message: Message):
     if not in_target_topic(message):
         return
 
     if not await is_admin(message.from_user.id):
-        await message.answer("⛔ Только админ может сбросить игру.")
+        await message.answer("⛔ Сбросить игру и рейтинг может только администратор.")
         return
 
+    game["active"] = False
+    game["leader_id"] = None
+    game["word"] = None
+    game["attempts"] = 0
     scores.clear()
-    game.reset()
 
     await message.answer("♻️ Игра и рейтинг полностью сброшены.")
 
 
 @dp.message(Command("hint"))
-async def cmd_hint(message: Message) -> None:
-    """Выдаёт подсказку игрокам (может вызвать только ведущий)."""
-
+async def cmd_hint(message: Message):
     if not in_target_topic(message):
         return
 
-    if not game.active or not game.word or message.from_user.id != game.leader_id:
-        await message.answer("⛔ Только текущий ведущий может использовать подсказку.")
+    if not game["active"] or not game["word"]:
+        await message.answer("Сейчас игра не идёт.")
         return
 
-    if game.hint_level >= game.max_hints:
-        await message.answer("ℹ️ Достигнут максимум подсказок.")
+    if message.from_user.id != game["leader_id"]:
+        await message.answer("Подсказку может давать только текущий ведущий.")
         return
 
-    game.hint_level = 1
-    hint = format_hint(game.word, game.hint_level)
-    await message.answer(f"💡 Подсказка #{game.hint_level}:\n{hint}")
+    word = game["word"]
+    hint = word[0] + " _" * (len(word) - 1)
+
+    await message.answer(
+        f"💡 Подсказка:\n"
+        f"Слово из {len(word)} букв.\n"
+        f"Первая буква: <b>{word[0].upper()}</b>\n"
+        f"<code>{hint}</code>"
+    )
 
 
-# ================== CALLBACK-КНОПКИ ВЕДУЩЕГО ==================
-@dp.callback_query(F.data.startswith("show"))
-async def cq_show_word(call: CallbackQuery) -> None:
-    """Отправляет ведущему слово повторно."""
+# ========= CALLBACK-КНОПКИ =========
 
-    if not game.active or not game.word:
-        await call.answer("Игра неактивна", show_alert=True)
+@dp.callback_query()
+async def callbacks(call: CallbackQuery):
+    msg = call.message
+    if not msg or msg.chat.id != CHAT_ID:
         return
 
-    _, leader_id_str = call.data.split(":", 1)
-    if int(leader_id_str) != call.from_user.id:
-        await call.answer("Это не ваша кнопка", show_alert=True)
+    # проверка темы для кнопок
+    if THREAD_ID != 0:
+        thread = getattr(msg, "message_thread_id", None)
+        if thread is not None and thread != THREAD_ID:
+            return
+
+    if not game["active"] or not game["leader_id"]:
+        await call.answer("Игра сейчас не идёт.", show_alert=True)
         return
 
-    await notify_leader(game.word, call.from_user)
-    await call.answer("Слово отправлено в личку", show_alert=True)
-
-
-@dp.callback_query(F.data.startswith("replace"))
-async def cq_replace_word(call: CallbackQuery) -> None:
-    """Меняет слово для текущего ведущего."""
-
-    if not game.active:
-        await call.answer("Игра неактивна", show_alert=True)
+    data = call.data or ""
+    try:
+        action, leader_str = data.split(":")
+        leader_id = int(leader_str)
+    except ValueError:
+        await call.answer("Некорректные данные кнопки.", show_alert=True)
         return
 
-    _, leader_id_str = call.data.split(":", 1)
-    if int(leader_id_str) != call.from_user.id:
-        await call.answer("Это не ваша кнопка", show_alert=True)
+    if call.from_user.id != leader_id:
+        await call.answer("Вы не ведущий и не можете использовать эту кнопку.", show_alert=True)
         return
 
-    words = await load_words()
-    new_word = random.choice(words)
-    game.word = new_word
-    game.hint_level = 0
-    game.attempts = 0
-    game.revealed_positions.clear()
-
-    await notify_leader(new_word, call.from_user)
-    await call.message.answer("🔄 Ведущий сменил слово. Начинаем угадывать заново!")
-    await call.answer("Новое слово отправлено вам в личку.", show_alert=True)
-
-
-@dp.callback_query(F.data.startswith("stop"))
-async def cq_stop_game(call: CallbackQuery) -> None:
-    """Останавливает игру (доступно только админу)."""
-
-    if not await is_admin(call.from_user.id):
-        await call.answer("⛔ Только админ может остановить игру.", show_alert=True)
+    # Показать слово
+    if action == "show":
+        await call.answer(f"Слово: {game['word']}", show_alert=True)
         return
 
-    game.reset()
-    await call.message.answer("⛔ Игра остановлена администратором.")
-    await call.answer("Готово.", show_alert=True)
+    # Новое слово
+    if action == "replace":
+        words = await load_words()
+        game["word"] = random.choice(words)
+        game["attempts"] = 0
+        await call.answer(f"Новое слово: {game['word']}", show_alert=True)
+        return
+
+    # Остановить игру
+    if action == "stop":
+        if not await is_admin(call.from_user.id):
+            await call.answer("Остановить игру может только админ.", show_alert=True)
+            return
+
+        game["active"] = False
+        game["leader_id"] = None
+        game["word"] = None
+        game["attempts"] = 0
+
+        await msg.answer("⛔ Игра остановлена. Для нового раунда используйте /startgame.")
+        await call.answer("Игра остановлена.", show_alert=True)
+        return
 
 
-# ================== ОБРАБОТКА СООБЩЕНИЙ ==================
+# ========= УГАДЫВАНИЕ СЛОВА =========
+
 @dp.message()
-async def guessing(message: Message) -> None:
-    """Отвечает за основной процесс угадывания."""
-
+async def handle_guess(message: Message):
+    # Фильтруем по чату/теме
     if not in_target_topic(message):
         return
 
-    if not game.active or not game.word:
+    # Нет активной игры или слова
+    if not game["active"] or not game["word"]:
         return
 
-    if message.from_user.id == game.leader_id:
+    # Ведущий своё слово не угадывает
+    if message.from_user.id == game["leader_id"]:
         return
 
     if not message.text:
         return
 
     guess = normalize(message.text)
+    answer = normalize(game["word"])
+
     if not guess:
         return
 
-    answer = normalize(game.word)
+    # допускаем фразы вида "это слово яблоко"
     if answer not in guess:
-        game.attempts = 1
-        if game.attempts % ATTEMPTS_NOTIFY_STEP == 0:
-            await message.answer(
-                f"🙌 Уже {game.attempts} попыток! Ведущий может выдать подсказку /hint."
-            )
-        await maybe_auto_hint(message)
+        game["attempts"] += 1
         return
 
-    # Если мы оказались здесь — слово угадано
-    new_points = add_score(message.from_user)
+    # УГАДАНО
+    uid = message.from_user.id
+    scores[uid] = scores.get(uid, 0) + 1
+
     await message.answer(
-        f"🎉 {mention(message.from_user)} угадал слово <b>{game.word}</b>!\n"
-        f"Теперь у него {new_points} очков."
+        f"🎉 {mention(message.from_user)} угадал слово <b>{game['word']}</b>!\n"
+        f"Теперь у него {scores[uid]} очков."
     )
 
-    await launch_round(message, message.from_user)
+    # передаём ход новому ведущему
+    words = await load_words()
+    new_word = random.choice(words)
+
+    game["leader_id"] = uid
+    game["word"] = new_word
+    game["attempts"] = 0
+
+    await message.answer(
+        f"👉 Новый ведущий: {mention(message.from_user)}",
+        reply_markup=leader_keyboard(uid),
+    )
 
 
-# ================== ТОЧКА ВХОДА ==================
-async def main() -> None:
-    """Точка входа: регистрируем команды и запускаем long polling."""
+# ========= ЗАПУСК =========
 
-    logger.info("🚀 Бот запущен!")
+async def main():
+    logger.info("🚀 Бот запущен")
     await setup_bot_commands(bot)
     await dp.start_polling(bot)
 
