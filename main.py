@@ -48,8 +48,9 @@ scores: dict[int, int] = {}
 # ========= УТИЛИТЫ =========
 
 def normalize(text: str) -> str:
-    """Очищаем строку от всего, кроме букв, приводим к нижнему регистру."""
-    return "".join(ch.lower() for ch in text if ch.isalpha())
+    """Оставить буквы, е = ё, убрать пробелы, пунктуацию"""
+    text = text.lower().replace("ё", "е")
+    return "".join(ch for ch in text if "а" <= ch <= "я" or "a" <= ch <= "z")
 
 
 def mention(user) -> str:
