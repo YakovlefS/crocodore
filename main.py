@@ -58,7 +58,9 @@ def mention(user) -> str:
 
 
 def in_target_topic(message: Message) -> bool:
-    """Проверяем, что бот должен реагировать на это сообщение."""
+    # Просто проверяем, что это нужный чат
+    return bool(message.chat) and message.chat.id == CHAT_ID
+
     # Не тот чат
     if not message.chat or message.chat.id != CHAT_ID:
         return False
@@ -247,13 +249,9 @@ async def cmd_hint(message: Message):
 
 @dp.callback_query()
 async def callbacks(call: CallbackQuery):
+    # Реагируем только в нужном чате
     if call.message.chat.id != CHAT_ID:
         return
-
-    if THREAD_ID != 0:
-        thread = getattr(call.message, "message_thread_id", None)
-        if thread is not None and thread != THREAD_ID:
-            return
 
     if not game["active"] or not game["leader_id"]:
         await call.answer("Игра не идёт.", show_alert=True)
