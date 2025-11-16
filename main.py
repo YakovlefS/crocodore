@@ -77,7 +77,7 @@ def in_target_topic(message: Message) -> bool:
         return thread == THREAD_ID
 
     # на всякий случай (редкий кейс, когда thread_id не приходит)
-    return False
+    return True
 
 
 async def is_admin(user_id: int) -> bool:
