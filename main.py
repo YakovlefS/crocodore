@@ -58,21 +58,22 @@ def mention(user) -> str:
 
 
 def in_target_topic(message: Message) -> bool:
-    # 1. Проверяем чат
+    """Проверяем, что бот должен реагировать на это сообщение."""
+    # Не тот чат
     if not message.chat or message.chat.id != CHAT_ID:
         return False
 
-    # 2. Если разрешено без темы
+    # Игра разрешена без темы
     if THREAD_ID == 0:
         return True
 
-    # 3. Если поле есть — строго сравниваем
+    # У сообщения есть thread_id — сверяем
     thread = getattr(message, "message_thread_id", None)
     if thread is not None:
         return thread == THREAD_ID
 
-    # 4. Если поле пропало — считаем, что это нужная тема
-    # (Потому что бот работает только в ОДНОЙ)
+    # Telegram иногда не присылает thread_id
+    # но у нас одна тема → считаем "верно"
     return True
 
 
@@ -249,10 +250,10 @@ async def callbacks(call: CallbackQuery):
     if call.message.chat.id != CHAT_ID:
         return
 
-   if THREAD_ID != 0:
-    thread = getattr(call.message, "message_thread_id", None)
-    if thread is not None and thread != THREAD_ID:
-        return
+    if THREAD_ID != 0:
+        thread = getattr(call.message, "message_thread_id", None)
+        if thread is not None and thread != THREAD_ID:
+            return
 
     if not game["active"] or not game["leader_id"]:
         await call.answer("Игра не идёт.", show_alert=True)
