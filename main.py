@@ -58,12 +58,22 @@ def mention(user) -> str:
 
 
 def in_target_topic(message: Message) -> bool:
-    """Проверяем, что бот должен реагировать на это сообщение."""
+    # 1. Проверяем чат
     if not message.chat or message.chat.id != CHAT_ID:
         return False
+
+    # 2. Если разрешено без темы
     if THREAD_ID == 0:
         return True
-    return getattr(message, "message_thread_id", 0) == THREAD_ID
+
+    # 3. Если поле есть — строго сравниваем
+    thread = getattr(message, "message_thread_id", None)
+    if thread is not None:
+        return thread == THREAD_ID
+
+    # 4. Если поле пропало — считаем, что это нужная тема
+    # (Потому что бот работает только в ОДНОЙ)
+    return True
 
 
 async def is_admin(user_id: int) -> bool:
@@ -239,7 +249,9 @@ async def callbacks(call: CallbackQuery):
     if call.message.chat.id != CHAT_ID:
         return
 
-    if THREAD_ID != 0 and getattr(call.message, "message_thread_id", 0) != THREAD_ID:
+   if THREAD_ID != 0:
+    thread = getattr(call.message, "message_thread_id", None)
+    if thread is not None and thread != THREAD_ID:
         return
 
     if not game["active"] or not game["leader_id"]:
