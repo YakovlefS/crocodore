@@ -337,25 +337,33 @@ async def on_callback(call: CallbackQuery):
 
 @dp.message()
 async def on_guess(message: Message):
+    # Проверяем что сообщение в нужной теме
     if not in_target_topic(message):
         return
 
-    if not game["active"]:
+    # Проверяем что игра активна
+    if not game["active"] or not game["word"]:
+        return
+
+    # Ведущий не может угадывать своё слово
+    if message.from_user.id == game["leader_id"]:
         return
 
     if not message.text:
         return
 
-    if message.from_user.id == game["leader_id"]:
-        return
-
     guess = normalize(message.text)
     answer = normalize(game["word"])
 
+    if not guess:
+        return
+
+    # Проверяем правильность
     if answer not in guess:
         game["attempts"] += 1
         return
 
+    # Угадано!
     uid = message.from_user.id
     scores[uid] = scores.get(uid, 0) + 1
 
@@ -364,13 +372,13 @@ async def on_guess(message: Message):
         f"Теперь у него {scores[uid]} очков."
     )
 
-    # Новый ведущий — тот, кто угадал
+    # Выбираем новое слово (без повторов)
     words = await load_words()
     global used_words
 
     candidates = [w for w in words if w not in used_words]
     if not candidates:
-        await message.answer("🎉 Все слова кончились! Игра завершена!")
+        await message.answer("🎉 Все слова были использованы! Игра завершена!")
         game["active"] = False
         return
 
@@ -378,7 +386,9 @@ async def on_guess(message: Message):
     used_words.add(new_word)
     save_used_word(new_word)
 
-    game.update(leader_id=uid, word=new_word, attempts=0)
+    game["leader_id"] = uid
+    game["word"] = new_word
+    game["attempts"] = 0
 
     await message.answer(
         f"👉 Новый ведущий: {mention(message.from_user)}",
