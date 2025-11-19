@@ -307,6 +307,26 @@ async def cmd_top(message: Message):
     await message.answer("🏆 <b>Топ-10:</b>\n" + "\n".join(lines))
 
 
+@dp.message(Command("say"))
+async def cmd_say(message: Message):
+    if not await is_admin(message.from_user.id):
+        return await message.answer("⛔ Только админ может отправлять сообщения от имени бота.")
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer("Использование:\n/say текст сообщения")
+
+    text = parts[1]
+
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=f"📢 Сообщение от администратора:\n{text}",
+        message_thread_id=THREAD_ID if THREAD_ID != 0 else None
+    )
+
+    await message.answer("✅ Отправлено.")
+
+
 # ====== CALLBACK BUTTONS ======
 @dp.callback_query()
 async def on_callback(call: CallbackQuery):
