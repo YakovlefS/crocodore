@@ -100,9 +100,13 @@ async def is_admin(user_id: int) -> bool:
 async def load_words():
     try:
         with open("words.txt", "r", encoding="utf-8") as f:
-            return [w.strip().lower() for w in f if w.strip()]
+            words = [w.strip().lower() for w in f if w.strip()]
+        game["words_count"] = len(words)   # <<< СЧЁТЧИК
+        return words
     except:
-        return ["крокодил", "машина", "лампа", "река", "дерево"]
+        fallback = ["крокодил", "машина", "лампа", "река", "дерево"]
+        game["words_count"] = len(fallback)
+        return fallback
 
 
 def leader_keyboard(uid: int):
@@ -269,6 +273,16 @@ async def cmd_hint(message: Message):
         f"💡 Подсказка:\nСлово из {len(word)} букв\n<code>{hint}</code>"
     )
 
+@dp.message(Command("words"))
+async def cmd_words(message: Message):
+    if not in_target_topic(message):
+        return
+
+    # Если слова ещё не загружены – загрузим принудительно
+    if "words_count" not in game:
+        await load_words()
+
+    await message.answer(f"📘 Загружено слов: <b>{game['words_count']}</b>")
 
 # ========= КНОПКИ =========
 
