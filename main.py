@@ -330,23 +330,42 @@ async def on_callback(call: CallbackQuery):
     action = data[0]
     leader_id = int(data[1])
 
-    # === Проверяем тему чата ===
-    if msg.chat.id != CHAT_ID:
-        return
-    if THREAD_ID != 0:
-        if getattr(msg, "message_thread_id", None) != THREAD_ID:
-            return
+    user = call.from_user
 
-    # === Проверяем доступ ===
-    username = call.from_user.username
-    user_id = call.from_user.id
+    # --- Жёсткая защита ---
+    is_leader = (user.id == leader_id)
+    is_officer_user = is_officer(user.username)
 
-    # ведущий ИЛИ офицер
-    is_leader = user_id == leader_id
-    is_off = is_officer(username)
+    # Только ведущий или офицеры могут нажимать КНОПКИ
+    if not is_leader and not is_officer_user:
+        return await call.answer("⛔ У вас нет доступа.", show_alert=True)
+    # ------------------------------------
 
-    if not (is_leader or is_off):
-        return await call.answer("⛔ Доступ только ведущему.", show_alert=True)
+    if action == "show":
+        return await call.answer(f"Слово: {game['word']}", show_alert=True)
+
+    if action == "replace":
+        words = await load_words()
+        candidates = [w for w in words if w not in used_words]
+
+        if not candidates:
+            return await call.answer("Слова закончились", show_alert=True)
+
+        new_word = random.choice(candidates)
+        used_words.add(new_word)
+        save_used_word(new_word)
+
+        game["word"] = new_word
+        game["attempts"] = 0
+
+        return await call.answer(f"Новое слово выбрано", show_alert=True)
+
+    if action == "pass":
+        return await msg.answer("Чтобы передать ход:\n/passlead @username")
+
+    if action == "stop":
+        game.update(active=False, word=None, leader_id=None)
+        return await msg.answer("⛔ Игра остановлена.")
 
     # === ЛОГИКА КНОПОК ===
 
