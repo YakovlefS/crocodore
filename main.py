@@ -35,11 +35,6 @@ dp = Dispatcher()
 
 # ====== ОФИЦЕРЫ ======
 OFFICERS = [
-    "@Maffins89",
-    "@Gi_Di_Al",
-    "@oOMEMCH1KOo",
-    "@Ferbi55",
-    "@Ahaha_Ohoho",
     "@yakovlef"
 ]
 
@@ -335,10 +330,25 @@ async def on_callback(call: CallbackQuery):
     action = data[0]
     leader_id = int(data[1])
 
-    # офицеры тоже могут
-    ok = (call.from_user.id == leader_id) or is_officer(call.from_user.username)
-    if not ok:
-        return await call.answer("⛔ Нет доступа.", show_alert=True)
+    # === Проверяем тему чата ===
+    if msg.chat.id != CHAT_ID:
+        return
+    if THREAD_ID != 0:
+        if getattr(msg, "message_thread_id", None) != THREAD_ID:
+            return
+
+    # === Проверяем доступ ===
+    username = call.from_user.username
+    user_id = call.from_user.id
+
+    # ведущий ИЛИ офицер
+    is_leader = user_id == leader_id
+    is_off = is_officer(username)
+
+    if not (is_leader or is_off):
+        return await call.answer("⛔ Доступ только ведущему.", show_alert=True)
+
+    # === ЛОГИКА КНОПОК ===
 
     if action == "show":
         return await call.answer(f"Слово: {game['word']}", show_alert=True)
@@ -364,8 +374,45 @@ async def on_callback(call: CallbackQuery):
         return await call.answer()
 
     if action == "stop":
+        if not await is_admin(user_id):
+            return await call.answer("⛔ Только админ может остановить игру.", show_alert=True)
+
         game.update(active=False, word=None, leader_id=None)
         return await msg.answer("⛔ Игра остановлена.")
+
+
+# ====== Рестарт игры ======
+@dp.message(Command("restartgame"))
+async def cmd_restartgame(message: Message):
+    username = message.from_user.username
+
+    # Только офицеры или админы
+    if not (is_officer(username) or await is_admin(message.from_user.id)):
+        return await message.answer("⛔ Только офицеры или администраторы могут перезапустить игру.")
+
+    words = await load_words()
+    candidates = [w for w in words if w not in used_words]
+
+    if not candidates:
+        return await message.answer("🎉 Все слова использованы, перезапустить невозможно!")
+
+    new_word = random.choice(candidates)
+    used_words.add(new_word)
+    save_used_word(new_word)
+
+    game.update(
+        active=True,
+        leader_id=message.from_user.id,
+        word=new_word,
+        attempts=0
+    )
+
+    await message.answer(
+        f"♻️ Игра перезапущена!\n"
+        f"🎮 Новый ведущий: {mention(message.from_user)}\n"
+        f"🆕 Слово выбрано.",
+        reply_markup=leader_keyboard(message.from_user.id)
+    )
 
 
 # ====== ГЛАВНЫЙ MESSAGE HANDLER — УГАДЫВАНИЕ ======
