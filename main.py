@@ -6,26 +6,27 @@ import asyncio
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
+from aiogram.client.default import DefaultBotProperties
 from aiogram.types import (
     Message,
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    BotCommand,
 )
-from aiogram.client.default import DefaultBotProperties
 
-# ====== ЛОГИ ======
+# ---------- ЛОГИ ----------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ====== ENV ======
+# ---------- ENV ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = int(os.getenv("CHAT_ID", "0"))
 THREAD_ID = int(os.getenv("THREAD_ID", "0"))
 
 if not BOT_TOKEN:
-    raise SystemExit("❌ BOT_TOKEN отсутствует!")
+    raise SystemExit("Не задан BOT_TOKEN")
+
+SUPER_OFFICER = "@yakovlef"
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -33,41 +34,15 @@ bot = Bot(
 )
 dp = Dispatcher()
 
-# ====== ОФИЦЕРЫ ======
-OFFICERS = [
-    "@yakovlef"
-]
-
-def is_officer(username: str) -> bool:
-    if not username:
-        return False
-    return ("@" + username.lower()) in [o.lower() for o in OFFICERS]
-
-
-# ====== ФАЙЛ ИСТОРИИ СЛОВ ======
-USED_WORDS_FILE = "used_words.txt"
-
-def load_used_words() -> set:
-    try:
-        with open(USED_WORDS_FILE, "r", encoding="utf-8") as f:
-            return {w.strip().lower() for w in f if w.strip()}
-    except FileNotFoundError:
-        return set()
-
-def save_used_word(word: str):
-    with open(USED_WORDS_FILE, "a", encoding="utf-8") as f:
-        f.write(word.lower() + "\n")
-
-used_words = load_used_words()
-
-
-# ====== ФАЙЛ ОЧКОВ ======
+# ---------- ФАЙЛЫ ----------
 SCORES_FILE = "scores.json"
+USED_WORDS_FILE = "used_words.txt"
 
 def load_scores() -> dict:
     try:
         with open(SCORES_FILE, "r", encoding="utf-8") as f:
-            return {int(k): v for k, v in json.load(f).items()}
+            raw = json.load(f)
+            return {int(k): v for k, v in raw.items()}
     except:
         return {}
 
@@ -75,166 +50,79 @@ def save_scores(scores: dict):
     with open(SCORES_FILE, "w", encoding="utf-8") as f:
         json.dump(scores, f, ensure_ascii=False, indent=2)
 
+def load_used_words() -> set:
+    try:
+        with open(USED_WORDS_FILE, "r", encoding="utf-8") as f:
+            return {w.strip().lower() for w in f if w.strip()}
+    except:
+        return set()
 
-# ====== СОСТОЯНИЕ ИГРЫ ======
+def save_used_word(word: str):
+    with open(USED_WORDS_FILE, "a", encoding="utf-8") as f:
+        f.write(word.lower() + "\n")
+
+# ---------- СОСТОЯНИЕ ----------
 game = {
     "active": False,
     "word": None,
     "leader_id": None,
     "attempts": 0,
-    "words_count": 0
 }
 
-scores = load_scores()
+scores: dict[int, int] = load_scores()
+used_words: set[str] = load_used_words()
 
+# ---------- ФУНКЦИИ ----------
 
-# ====== HELPERS ======
-def normalize(t: str) -> str:
-    t = t.lower().replace("ё", "е")
-    return "".join(ch for ch in t if ch.isalpha())
+def normalize(text: str) -> str:
+    return "".join(ch.lower() for ch in text if ch.isalpha())
 
 def mention(user) -> str:
-    name = user.full_name.replace("<", "").replace(">", "")
+    name = (user.full_name or "игрок").replace("<", "").replace(">", "")
     return f'<a href="tg://user?id={user.id}">{name}</a>'
 
 def in_target_topic(message: Message) -> bool:
-    if message.chat.id != CHAT_ID:
-        return False
-    if THREAD_ID == 0:
-        return True
-    return getattr(message, "message_thread_id", None) == THREAD_ID
+    return (
+        message.chat
+        and message.chat.id == CHAT_ID
+        and getattr(message, "message_thread_id", None) == THREAD_ID
+    )
 
-async def is_admin(uid: int) -> bool:
-    try:
-        m = await bot.get_chat_member(CHAT_ID, uid)
-        return m.status in ("administrator", "creator")
-    except:
-        return False
-
-async def load_words():
+async def load_words() -> list[str]:
     try:
         with open("words.txt", "r", encoding="utf-8") as f:
             words = [w.strip().lower() for w in f if w.strip()]
-        game["words_count"] = len(words)
+        if not words:
+            raise ValueError("Пустой words.txt")
         return words
     except:
-        fallback = ["крокодил", "машина", "лампа"]
-        game["words_count"] = len(fallback)
-        return fallback
+        return ["яблоко", "кошка", "самолёт", "дерево", "лампа"]
 
-def leader_keyboard(uid: int):
+def leader_keyboard(uid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="👁 Показать слово", callback_data=f"show:{uid}"),
-                InlineKeyboardButton(text="🔄 Новое слово", callback_data=f"replace:{uid}")
+                InlineKeyboardButton(
+                    text="👁 Показать слово", callback_data=f"show:{uid}"
+                ),
+                InlineKeyboardButton(
+                    text="🔄 Новое слово", callback_data=f"replace:{uid}"
+                ),
             ],
             [
-                InlineKeyboardButton(text="🎯 Передать ход", callback_data=f"pass:{uid}")
-            ],
-            [
-                InlineKeyboardButton(text="⛔ Стоп", callback_data=f"stop:{uid}")
+                InlineKeyboardButton(
+                    text="⛔ Остановить игру", callback_data=f"stop:{uid}"
+                )
             ]
         ]
     )
 
-async def setup_commands(bot: Bot):
-    await bot.set_my_commands([
-        BotCommand(command="startgame", description="Начать игру"),
-        BotCommand(command="score", description="Рейтинг"),
-        BotCommand(command="top", description="Топ-10"),
-        BotCommand(command="hint", description="Подсказка"),
-        BotCommand(command="addword", description="Добавить слово"),
-        BotCommand(command="showword", description="Офицеры: показать слово"),
-        BotCommand(command="passlead", description="Офицеры: передать руководителя"),
-        BotCommand(command="words", description="Количество слов"),
-        BotCommand(command="info", description="Показать chat_id / thread_id"),
-    ])
+def is_super(user) -> bool:
+    username = user.from_user.username
+    return username and ("@" + username.lower()) == SUPER_OFFICER.lower()
 
 
-# ====== КОМАНДЫ ======
-
-@dp.message(Command("info"))
-async def cmd_info(message: Message):
-    await message.answer(
-        f"chat_id: <code>{message.chat.id}</code>\n"
-        f"thread_id: <code>{getattr(message, 'message_thread_id', None)}</code>"
-    )
-
-@dp.message(Command("words"))
-async def cmd_words(message: Message):
-    await load_words()
-    await message.answer(f"📘 Загружено слов: <b>{game['words_count']}</b>")
-
-@dp.message(Command("addword"))
-async def cmd_addword(message: Message):
-    if not await is_admin(message.from_user.id):
-        return await message.answer("⛔ Только администратор может добавлять слова.")
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        return await message.answer("Использование:\n/addword слово")
-
-    word = parts[1].strip().lower()
-
-    if len(word) < 3 or not word.isalpha():
-        return await message.answer("❌ Слово должно быть минимум 3 буквы.")
-
-    words = await load_words()
-
-    if word in words:
-        return await message.answer("⚠️ Такое слово уже есть.")
-
-    with open("words.txt", "a", encoding="utf-8") as f:
-        f.write(word + "\n")
-
-    game["words_count"] += 1
-
-    await message.answer(f"✅ Добавлено слово: <b>{word}</b>\n📘 Теперь слов: {game['words_count']}")
-
-
-@dp.message(Command("showword"))
-async def cmd_showword(message: Message):
-    username = message.from_user.username
-
-    if not is_officer(username):
-        return await message.answer("⛔ Команда доступна только офицерам.")
-
-    if not game["active"]:
-        return await message.answer("⚠️ Игра не идёт.")
-
-    await message.answer(f"👁 Слово: <b>{game['word']}</b>")
-
-
-@dp.message(Command("passlead"))
-async def cmd_passlead(message: Message):
-    username = message.from_user.username
-
-    if not is_officer(username):
-        return await message.answer("⛔ Передавать ход могут только офицеры.")
-
-    parts = message.text.split()
-    if len(parts) < 2:
-        return await message.answer("Использование:\n/passlead @username")
-
-    target = parts[1].lower()
-
-    try:
-        member = await bot.get_chat_member(CHAT_ID, target)
-        new_leader = member.user
-    except:
-        return await message.answer("❌ Пользователь не найден.")
-
-    if not game["active"]:
-        return await message.answer("⚠️ Игра не идёт.")
-
-    game["leader_id"] = new_leader.id
-
-    await message.answer(
-        f"🎯 Ход передан: {mention(new_leader)}",
-        reply_markup=leader_keyboard(new_leader.id)
-    )
-
+# ---------- КОМАНДЫ ----------
 
 @dp.message(Command("startgame"))
 async def cmd_startgame(message: Message):
@@ -242,43 +130,42 @@ async def cmd_startgame(message: Message):
         return
 
     words = await load_words()
+
+    # Ищем НЕиспользованные слова
     candidates = [w for w in words if w not in used_words]
     if not candidates:
-        return await message.answer("🎉 Все слова использованы!")
+        return await message.answer("🎉 Слова закончились! Очистите used_words.txt")
 
     word = random.choice(candidates)
+
     used_words.add(word)
     save_used_word(word)
 
-    leader = message.from_user
-
-    game.update(active=True, word=word, leader_id=leader.id, attempts=0)
+    game.update(
+        active=True,
+        word=word,
+        leader_id=message.from_user.id,
+        attempts=0,
+    )
 
     await message.answer(
-        f"🎮 Игра началась!\nВедущий: {mention(leader)}\n📘 Слов в словаре: {game['words_count']}",
-        reply_markup=leader_keyboard(leader.id)
+        f"🎮 Игра началась!\nВедущий: {mention(message.from_user)}",
+        reply_markup=leader_keyboard(message.from_user.id)
     )
 
 
 @dp.message(Command("score"))
 async def cmd_score(message: Message):
     if not scores:
-        return await message.answer("📊 Рейтинг пуст.")
+        return await message.answer("Рейтинг пуст.")
 
-    rating = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    sorted_s = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    lines = [
+        f"{i+1}. <a href='tg://user?id={uid}'>ID:{uid}</a> — {pts}"
+        for i, (uid, pts) in enumerate(sorted_s)
+    ]
 
-    lines = []
-    for i, (uid, pts) in enumerate(rating, 1):
-        try:
-            member = await bot.get_chat_member(CHAT_ID, uid)
-            u = member.user
-            name = f"@{u.username}" if u.username else u.full_name
-        except:
-            name = f"ID:{uid}"
-
-        lines.append(f"{i}. {name} — {pts}")
-
-    await message.answer("📊 <b>Рейтинг:</b>\n" + "\n".join(lines))
+    await message.answer("📊 Общий рейтинг:\n" + "\n".join(lines))
 
 
 @dp.message(Command("top"))
@@ -315,89 +202,79 @@ async def cmd_say(message: Message):
 
     await bot.send_message(
         chat_id=CHAT_ID,
-        text=f"📢 Сообщение от администратора:\n{text}",
+        text=f"\n{text}",
         message_thread_id=THREAD_ID if THREAD_ID != 0 else None
     )
 
     await message.answer("✅ Отправлено.")
 
 
-# ====== CALLBACK BUTTONS ======
-@dp.callback_query()
-async def on_callback(call: CallbackQuery):
-    msg = call.message
-    data = call.data.split(":")
-    action = data[0]
-    leader_id = int(data[1])
+@dp.message(Command("resetgame"))
+async def cmd_resetgame(message: Message):
+    if not is_super(message):
+        return await message.answer("⛔ Только @yakovlef может сбросить игру.")
 
-    user = call.from_user
+    game.update(active=False, word=None, leader_id=None, attempts=0)
+    scores.clear()
+    save_scores(scores)
 
-    # --- Жёсткая защита ---
-    is_leader = (user.id == leader_id)
-    is_officer_user = is_officer(user.username)
+    await message.answer("♻️ Игра и рейтинг сброшены.")
 
-    # Только ведущий или офицеры могут нажимать КНОПКИ
-    if not is_leader and not is_officer_user:
-        return await call.answer("⛔ У вас нет доступа.", show_alert=True)
-    # ------------------------------------
 
-    if action == "show":
-        return await call.answer(f"Слово: {game['word']}", show_alert=True)
+@dp.message(Command("addword"))
+async def cmd_addword(message: Message):
+    if not await is_admin(message.from_user.id):
+        return await message.answer("⛔ Только администратор может добавлять слова.")
 
-    if action == "replace":
-        words = await load_words()
-        candidates = [w for w in words if w not in used_words]
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        return await message.answer("Использование:\n/addword слово")
 
-        if not candidates:
-            return await call.answer("Слова закончились", show_alert=True)
+    word = parts[1].strip().lower()
 
-        new_word = random.choice(candidates)
-        used_words.add(new_word)
-        save_used_word(new_word)
+    if len(word) < 3 or not word.isalpha():
+        return await message.answer("❌ Слово должно быть минимум 3 буквы.")
 
-        game["word"] = new_word
-        game["attempts"] = 0
+    words = await load_words()
 
-        return await call.answer(f"Новое слово выбрано", show_alert=True)
+    if word in words:
+        return await message.answer("⚠️ Такое слово уже есть.")
 
-    if action == "pass":
-        return await msg.answer("Чтобы передать ход:\n/passlead @username")
+    with open("words.txt", "a", encoding="utf-8") as f:
+        f.write(word + "\n")
 
-    if action == "stop":
-        game.update(active=False, word=None, leader_id=None)
-        return await msg.answer("⛔ Игра остановлена.")
+    game["words_count"] += 1
 
-    # === ЛОГИКА КНОПОК ===
+    await message.answer(f"✅ Добавлено слово: <b>{word}</b>\n📘 Теперь слов: {game['words_count']}")
 
-    if action == "show":
-        return await call.answer(f"Слово: {game['word']}", show_alert=True)
 
-    if action == "replace":
-        words = await load_words()
-        candidates = [w for w in words if w not in used_words]
+@dp.message(Command("passlead"))
+async def cmd_passlead(message: Message):
+    username = message.from_user.username
 
-        if not candidates:
-            return await call.answer("Слова закончились.", show_alert=True)
+    if not is_officer(username):
+        return await message.answer("⛔ Передавать ход могут только офицеры.")
 
-        new_word = random.choice(candidates)
-        used_words.add(new_word)
-        save_used_word(new_word)
+    parts = message.text.split()
+    if len(parts) < 2:
+        return await message.answer("Использование:\n/passlead @username")
 
-        game["word"] = new_word
-        game["attempts"] = 0
+    target = parts[1].lower()
 
-        return await call.answer(f"Новое слово: {new_word}", show_alert=True)
+    try:
+        member = await bot.get_chat_member(CHAT_ID, target)
+        new_leader = member.user
+    except:
+        return await message.answer("❌ Пользователь не найден.")
 
-    if action == "pass":
-        await msg.answer("Чтобы передать ход:\n/passlead @username")
-        return await call.answer()
+    if not game["active"]:
+        return await message.answer("⚠️ Игра не идёт.")
 
-    if action == "stop":
-        if not await is_admin(user_id):
-            return await call.answer("⛔ Только админ может остановить игру.", show_alert=True)
+    game["leader_id"] = new_leader.id
 
-        game.update(active=False, word=None, leader_id=None)
-        return await msg.answer("⛔ Игра остановлена.")
+    await message.answer(
+        f"🎯 Ход передан: {mention(new_leader)}",
+        reply_markup=leader_keyboard(new_leader.id)
 
 
 # ====== Рестарт игры ======
@@ -431,31 +308,107 @@ async def cmd_restartgame(message: Message):
         f"🎮 Новый ведущий: {mention(message.from_user)}\n"
         f"🆕 Слово выбрано.",
         reply_markup=leader_keyboard(message.from_user.id)
+
+
+@dp.message(Command("hint"))
+async def cmd_hint(message: Message):
+    if not in_target_topic(message):
+        return
+    if not game["active"]:
+        return
+
+    if message.from_user.id != game["leader_id"]:
+        return await message.answer("Подсказку может давать только ведущий.")
+
+    word = game["word"]
+    mask = word[0] + " " + "_ " * (len(word) - 1)
+
+    await message.answer(
+        f"💡 Подсказка:\n"
+        f"Слово из {len(word)} букв.\n"
+        f"Начинается на <b>{word[0].upper()}</b>\n"
+        f"<code>{mask}</code>"
     )
 
 
-# ====== ГЛАВНЫЙ MESSAGE HANDLER — УГАДЫВАНИЕ ======
+# ---------- CALL BACK ----------
+
+@dp.callback_query()
+async def callbacks(call: CallbackQuery):
+    if not call.message or not in_target_topic(call.message):
+        return
+    if not game["active"]:
+        return
+
+    data = call.data or ""
+    if ":" not in data:
+        return
+
+    action, leader_id_str = data.split(":", 1)
+
+    try:
+        leader_id = int(leader_id_str)
+    except:
+        return
+
+    # доступ только ведущему и супер-офицеру
+    if call.from_user.id != game["leader_id"] and not is_super(call):
+        return await call.answer("⛔ Доступ только ведущему и @yakovlef", show_alert=True)
+
+    # показать слово
+    if action == "show":
+        return await call.answer(f"Слово: {game['word']}", show_alert=True)
+
+    # новое слово
+    elif action == "replace":
+        words = await load_words()
+        candidates = [w for w in words if w not in used_words]
+
+        if not candidates:
+            return await call.answer("Слова закончились!", show_alert=True)
+
+        new_word = random.choice(candidates)
+        used_words.add(new_word)
+        save_used_word(new_word)
+
+        game["word"] = new_word
+        game["attempts"] = 0
+
+        return await call.answer(f"Новое слово: {new_word}", show_alert=True)
+
+    # стоп
+    elif action == "stop":
+        if not is_super(call):
+            return await call.answer("⛔ Остановить игру может только @yakovlef", show_alert=True)
+
+        game.update(active=False, word=None, leader_id=None, attempts=0)
+        await call.message.answer("⛔ Игра остановлена.")
+        return await call.answer("Остановлено.")
+
+
+# ---------- УГАДЫВАНИЕ СЛОВА ----------
+
 @dp.message()
 async def on_guess(message: Message):
     if not in_target_topic(message):
         return
-
     if not game["active"]:
         return
-
-    if message.from_user.id == game["leader_id"]:
-        return
-
     if not message.text:
+        return
+    if message.from_user.id == game["leader_id"]:
         return
 
     guess = normalize(message.text)
     answer = normalize(game["word"])
 
-    if answer not in guess:
+    if not guess:
         return
 
-    # угадано
+    if guess != answer:
+        return
+
+    # УГАДАЛ
     uid = message.from_user.id
     scores[uid] = scores.get(uid, 0) + 1
     save_scores(scores)
@@ -465,20 +418,24 @@ async def on_guess(message: Message):
         f"Очки: {scores[uid]}"
     )
 
-    # новое слово
+    # выбираем новое слово
     words = await load_words()
     candidates = [w for w in words if w not in used_words]
 
     if not candidates:
-        await message.answer("🎉 Все слова закончились!")
         game["active"] = False
-        return
+        return await message.answer("🎉 Все слова закончились!")
 
     new_word = random.choice(candidates)
     used_words.add(new_word)
     save_used_word(new_word)
 
-    game.update(leader_id=uid, word=new_word)
+    # передаем ход
+    game.update(
+        leader_id=uid,
+        word=new_word,
+        attempts=0
+    )
 
     await message.answer(
         f"👉 Новый ведущий: {mention(message.from_user)}",
@@ -486,9 +443,10 @@ async def on_guess(message: Message):
     )
 
 
-# ====== ЗАПУСК ======
+# ---------- ЗАПУСК ----------
+
 async def main():
-    await setup_commands(bot)
+    logger.info("Бот запущен.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
