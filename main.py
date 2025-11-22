@@ -172,15 +172,10 @@ def leader_keyboard(leader_id: int) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="👁 Показать слово", callback_data=f"show:{leader_id}"),
                 InlineKeyboardButton(text="🔄 Сменить слово", callback_data=f"replace:{leader_id}"),
-            ],
-            [
-                InlineKeyboardButton(text="🎯 Передать ход", callback_data=f"pass:{leader_id}"),
-            ],
-            [
-                InlineKeyboardButton(text="⛔ Остановить игру", callback_data=f"stop:{leader_id}"),
             ]
         ]
     )
+
 
 def pick_new_word(words: list[str]) -> str | None:
     """Берём новое слово без повторов."""
