@@ -371,19 +371,34 @@ async def cmd_addpoints(message: Message):
 
     parts = message.text.split()
     if len(parts) != 3:
-        return await message.answer("Использование: /addpoints @user 5")
+        return await message.answer("Использование:\n/addpoints @user 5")
 
-    username = parts[1]
+    raw = parts[1]
     pts = int(parts[2])
 
-    member = await bot.get_chat_member(CHAT_ID, username)
-    uid = member.user.id
+    # --- определяем ID ---
+    # вариант 1: @username
+    if raw.startswith("@"):
+        username = raw[1:].lower()
+        try:
+            user = await bot.get_chat(username)
+            uid = user.id
+        except:
+            return await message.answer("❌ Пользователь не найден.")
+    else:
+        # вариант 2: числовой ID
+        try:
+            uid = int(raw)
+            user = await bot.get_chat(uid)
+        except:
+            return await message.answer("❌ Некорректный ID пользователя.")
 
+    # --- добавляем очки ---
     scores[uid] = scores.get(uid, 0) + pts
     save_scores(scores)
 
     await message.answer(
-        f"Добавлено {pts} очков игроку {mention(member.user)}.\n"
+        f"✅ Добавлено {pts} очков игроку {mention(user)}.\n"
         f"Теперь у него {scores[uid]}"
     )
 
@@ -391,24 +406,29 @@ async def cmd_addpoints(message: Message):
 @dp.message(Command("removepoints"))
 async def cmd_removepoints(message: Message):
     if not is_super_user(message.from_user):
-        return await message.answer("⛔ Только @yakовlef")
+        return await message.answer("⛔ Только @yakovlef")
 
     parts = message.text.split()
     if len(parts) != 3:
-        return await message.answer("Использование: /removepoints @user 3")
+        return await message.answer("Использование:\n/removepoints @user 3")
 
-    username = parts[1]
+    raw = parts[1]
     pts = int(parts[2])
 
-    member = await bot.get_chat_member(CHAT_ID, username)
-    uid = member.user.id
+    # --- определяем ID ---
+    if raw.startswith("@"):
+        username = raw[1:].lower()
+        try:
+            user = await bot.get_chat(username)
+            uid = user.id
+        except:
+            return await message.answer("❌ Пользователь не найден.")
+    else:
+        try:
+            uid = int(raw)
+            user = await bot.get_chat(uid)
+        except:
 
-    scores[uid] = scores.get(uid, 0) - pts
-    save_scores(scores)
-
-    await message.answer(
-        f"Снято {pts} очков у {mention(member.user)}.\nТеперь: {scores[uid]}"
-    )
 
 # ============================================================
 #                      СПЕЦ-СЛОВО
