@@ -416,6 +416,7 @@ async def cmd_removepoints(message: Message):
     pts = int(parts[2])
 
     # --- определяем ID ---
+    # вариант 1: @username
     if raw.startswith("@"):
         username = raw[1:].lower()
         try:
@@ -424,10 +425,21 @@ async def cmd_removepoints(message: Message):
         except:
             return await message.answer("❌ Пользователь не найден.")
     else:
+        # вариант 2: числовой ID
         try:
             uid = int(raw)
             user = await bot.get_chat(uid)
         except:
+            return await message.answer("❌ Некорректный ID пользователя.")
+
+    # --- снимаем очки ---
+    scores[uid] = scores.get(uid, 0) - pts
+    save_scores(scores)
+
+    await message.answer(
+        f"❗ Снято {pts} очков у {mention(user)}.\n"
+        f"Теперь у него {scores[uid]}"
+    )
 
 
 # ============================================================
