@@ -195,7 +195,7 @@ async def cmd_start(message: Message):
     )
 
 
-@dp.message(Command("info")))
+@dp.message(Command("info"))
 async def cmd_info(message: Message):
     await message.answer(
         f"chat_id: <code>{message.chat.id}</code>\n"
