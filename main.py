@@ -109,6 +109,110 @@ scores: dict[int, int] = load_scores()
 used_words: set[str] = load_used_words()
 stats = load_stats()
 
+# ============================================================
+#            ЛОГГИРОВАНИЕ УГАДАННЫХ И ПРОПУЩЕННЫХ СЛОВ
+# ============================================================
+
+GUESSED_WORDS_FILE = "guessed_words.txt"
+MISSED_WORDS_FILE = "missed_words.txt"
+DAILY_STATS_FILE = "daily_stats.json"
+
+
+def load_daily_stats() -> dict:
+    try:
+        with open(DAILY_STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def save_daily_stats(stats: dict):
+    with open(DAILY_STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+
+
+daily_stats = load_daily_stats()
+
+
+def log_guessed(uid: int, word: str):
+    """Записать угаданное слово в файл и статистику."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # лог в файл
+    with open(GUESSED_WORDS_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ts} | {uid} | {word}\n")
+
+    # статистика за сутки
+    today = datetime.now().strftime("%Y-%m-%d")
+    daily_stats.setdefault(today, {})
+    daily_stats[today][str(uid)] = daily_stats[today].get(str(uid), 0) + 1
+    save_daily_stats(daily_stats)
+
+
+def log_missed(word: str):
+    """Записать пропущенное слово."""
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(MISSED_WORDS_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ts} | {word}\n")
+
+
+# ============================================================
+#            ЕЖЕДНЕВНАЯ ОТПРАВКА СТАТИСТИКИ
+# ============================================================
+
+async def send_daily_stats():
+    """Отправляет статистику за последние сутки."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if today not in daily_stats:
+        return
+
+    data = daily_stats[today]
+    lines = []
+
+    for uid, count in data.items():
+        try:
+            member = await bot.get_chat_member(CHAT_ID, int(uid))
+            name = "@" + member.user.username if member.user.username else member.user.full_name
+        except:
+            name = f"ID:{uid}"
+
+        lines.append(f"{name} — {count}")
+
+    if not lines:
+        return
+
+    text = (
+        f"📊 <b>Статистика за день</b>\n"
+        f"Дата: {today}\n\n"
+        + "\n".join(lines)
+    )
+
+    await bot.send_message(CHAT_ID, text)
+
+    # очищаем статистику следующего дня
+    del daily_stats[today]
+    save_daily_stats(daily_stats)
+
+# Запускаем ежедневное уведомление (раз в сутки)
+async def daily_scheduler():
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=23, minute=59, second=0, microsecond=0)
+
+        # если время уже прошло — переносим на завтра
+        if now > target:
+            target += timedelta(days=1)
+
+        wait_seconds = (target - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+
+        # отправляем статистику
+        try:
+            await send_daily_stats()
+        except Exception as e:
+            logger.error(f"Ошибка ежедневной статистики: {e}")
+
+
 # =========================================================
 #                      СОСТОЯНИЕ ИГРЫ
 # =========================================================
@@ -134,6 +238,66 @@ def normalize(text: str) -> str:
 def mention_html(user) -> str:
     name = (user.full_name or "игрок").replace("<", "").replace(">", "")
     return f'<a href="tg://user?id={user.id}">{name}</a>'
+# ============================================================
+#             ПОИСК ПОЛЬЗОВАТЕЛЯ ПО @username / ID / reply
+# ============================================================
+
+async def resolve_user(reference: str | None, message: Message):
+    """
+    Универсальный поиск пользователя:
+    • если reference начинается с '@' → ищем по username
+    • если число → считаем user_id
+    • если пусто, но есть reply → берём reply
+    • иначе возвращаем None
+    """
+
+    # Если есть reply — всегда приоритетнее
+    if not reference and message.reply_to_message:
+        return message.reply_to_message.from_user
+
+    if not reference:
+        return None
+
+    ref = reference.strip()
+
+    # ========== @username ==========
+    if ref.startswith("@"):
+        username = ref[1:].lower()
+        try:
+            # Сначала ищем среди участников чата
+            members = await bot.get_chat_administrators(message.chat.id)
+        except:
+            members = []
+
+        # Проверка среди админов
+        for m in members:
+            if m.user.username and m.user.username.lower() == username:
+                return m.user
+
+        # Пробуем Telegram API (только для публичных username)
+        try:
+            chat = await bot.get_chat(ref)
+            return chat
+        except:
+            return None
+
+    # ========== username без @ ==========
+    if ref.isalpha():
+        try:
+            chat = await bot.get_chat("@" + ref)
+            return chat
+        except:
+            return None
+
+    # ========== user_id ==========
+    if ref.isdigit():
+        try:
+            member = await bot.get_chat_member(message.chat.id, int(ref))
+            return member.user
+        except:
+            return None
+
+    return None
 
 def in_target_topic(message: Message) -> bool:
     if not message.chat or message.chat.id != CHAT_ID:
@@ -171,7 +335,10 @@ def leader_keyboard(leader_id: int) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="👁 Показать слово", callback_data=f"show:{leader_id}"),
-                InlineKeyboardButton(text="🔄 Сменить слово", callback_data=f"replace:{leader_id}"),
+                InlineKeyboardButton(text="🔄 Сменить слово", callback_data=f"replace:{leader_id}")
+            ],
+            [
+                InlineKeyboardButton(text="💡 Подсказка", callback_data=f"hint:{leader_id}")
             ]
         ]
     )
@@ -238,15 +405,6 @@ async def setup_commands():
         BotCommand(command="restartgame", description="Перезапустить игру (супер/админ)"),
         BotCommand(command="score", description="Полный рейтинг"),
         BotCommand(command="top", description="Топ-10"),
-        BotCommand(command="addword", description="Добавить слово (админ)"),
-        BotCommand(command="say", description="Сказать от имени бота (админ)"),
-        BotCommand(command="special", description="Спец-слово (только @yakovlef)"),
-        BotCommand(command="addpoints", description="Добавить очки (только @yakovlef)"),
-        BotCommand(command="delpoints", description="Убрать очки (только @yakovlef)"),
-        BotCommand(command="passlead", description="Передать ход (только @yakovlef)"),
-        BotCommand(command="hint", description="Подсказка (ведущий)"),
-        BotCommand(command="resetgame", description="Сброс игры и рейтинга (только @yakovlef)"),
-        BotCommand(command="info", description="Показать chat_id / thread_id"),
     ]
     await bot.set_my_commands(commands)
 
@@ -337,60 +495,81 @@ async def cmd_restartgame(message: Message):
     )
     await maybe_delete_command(message)
 
+# ============================================================
+#              СПЕЦИАЛЬНОЕ СЛОВО + ДОП.ОЧКИ
+# ============================================================
+
+SPECIAL = {
+    "active": False,
+    "word": None,
+    "points": 10
+}
+
+def normalize_e(text: str) -> str:
+    return text.lower().replace("ё", "е")
+
+def is_superuser(user):
+    return user.username and ("@" + user.username.lower()) == "@yakovlef"
+
+
 @dp.message(Command("special"))
 async def cmd_special(message: Message):
     """
-    Спец-слово от @yakovlef:
-    /special слово
-    - можно вызвать в ЛС боту или в теме
-    - ведущий на спец-слове всегда @yakovlef
-    - за угадывание +10 очков
+    Установка специального слова:
+    /special слово [очки]
+
+    Пример:
+    /special тигр 15
     """
-    update_activity()
-    global SUPER_OFFICER_ID
+    if not is_superuser(message.from_user):
+        return await message.answer("⛔ Только @yakovlef может задавать специальное слово.")
 
-    if not is_super(message):
-        await message.answer(f"{mention_html(message.from_user)}, спец-слово может задать только @yakovlef.")
-        await maybe_delete_command(message)
-        return
-
-    SUPER_OFFICER_ID = message.from_user.id
-
-    parts = (message.text or "").split(maxsplit=1)
+    parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Использование:\n/special <слово>")
-        await maybe_delete_command(message)
-        return
+        return await message.answer("Использование:\n/special слово [очки]")
 
-    special_word = parts[1].strip().lower()
-    if len(normalize(special_word)) < 4:
-        await message.answer("❌ Спец-слово должно быть минимум 4 буквы.")
-        await maybe_delete_command(message)
-        return
+    word = parts[1].strip()
+    points = 10
 
-    # спец-слово не пишем в used_words — оно отдельное
-    game.update(
-        active=True,
-        word=special_word,
-        leader_id=message.from_user.id,
-        attempts=0,
-        special=True,
-        special_reward=10
+    # Если указано количество баллов
+    if len(parts) >= 3 and parts[2].isdigit():
+        points = int(parts[2])
+
+    SPECIAL["active"] = True
+    SPECIAL["word"] = normalize_e(word)
+    SPECIAL["points"] = points
+
+    await message.answer(
+        f"⭐ Специальное слово установлено!\n"
+        f"🔤 Слово: <b>{word}</b>\n"
+        f"🏆 Награда за угадывание: <b>{points}</b> очков."
     )
 
-    # отправляем в тему уведомление
-    try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            message_thread_id=THREAD_ID if THREAD_ID != 0 else None,
-            text="⭐ Запущен <b>спец-раунд</b> от @yakovlef! Угадай слово — получишь +10 очков!",
-            reply_markup=leader_keyboard(message.from_user.id)
-        )
-    except:
-        pass
 
-    await message.answer("✅ Спец-слово установлено и отправлено в тему.")
-    await maybe_delete_command(message)
+async def check_special_word(message: Message, guess: str):
+    """
+    Проверка специального слова.
+    Возвращает True — если слово угадано и обработано.
+    """
+    if not SPECIAL["active"]:
+        return False
+
+    if normalize_e(guess) == SPECIAL["word"]:
+        uid = message.from_user.id
+        scores[uid] = scores.get(uid, 0) + SPECIAL["points"]
+        save_scores(scores)
+
+        await message.answer(
+            f"🌟 {mention_html(message.from_user)} угадал специальное слово!\n"
+            f"Получено: <b>{SPECIAL['points']}</b> очков!"
+        )
+
+        SPECIAL["active"] = False
+        SPECIAL["word"] = None
+        return True
+
+    return False
+
 
 @dp.message(Command("passlead"))
 async def cmd_passlead(message: Message):
@@ -682,6 +861,27 @@ async def callbacks(call: CallbackQuery):
         await call.answer("Игра сейчас не запущена.", show_alert=True)
         return
 
+    if action == "hint":
+    # только ведущий и супер-офицер
+    if call.from_user.id != game["leader_id"] and not is_super_user(call.from_user):
+        return await call.answer("⛔ Только ведущий.", show_alert=True)
+
+    word = game["word"]
+    if len(word) <= 2:
+        mask = word[0] + " _"
+    else:
+        mask = word[0] + " " + "_ " * (len(word) - 1)
+
+    await call.message.answer(
+        f"💡 Подсказка:\n"
+        f"Слово из {len(word)} букв.\n"
+        f"Начинается на <b>{word[0].upper()}</b>\n"
+        f"<code>{mask}</code>"
+    )
+
+    return await call.answer("Подсказка отправлена!")
+
+
     data = call.data or ""
     if ":" not in data:
         return
@@ -694,7 +894,7 @@ async def callbacks(call: CallbackQuery):
 
     allowed = (call.from_user.id == game["leader_id"]) or is_super(call)
     if not allowed or leader_id != game["leader_id"]:
-        await call.answer("⛔ Только ведущий и @yakovlef.", show_alert=True)
+        await call.answer("⛔ Только ведущий", show_alert=True)
         return
 
     if action == "show":
@@ -758,8 +958,13 @@ async def on_guess(message: Message):
                 f"⚠️ {mention_html(message.from_user)}, штраф -1 очко за однокоренное/подсказку!"
             )
         return
+        
 
     if not message.text:
+        return
+        
+        # проверка специального слова
+    if await check_special_word(message, message.text):
         return
 
     guess = normalize(message.text)
