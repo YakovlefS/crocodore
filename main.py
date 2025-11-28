@@ -224,41 +224,47 @@ def mention_html(user) -> str:
 # ============================================================
 async def resolve_user(reference: str | None, message: Message):
     """
-    Универсальный поиск пользователя:
-    • если reference начинается с '@' → пробуем по username
-    • если число → считаем user_id
-    • если пусто, но есть reply → берём из reply
-    • иначе возвращаем None
+    Ищет пользователя по:
+    - reply
+    - @username
+    - числовому user_id
     """
 
-    # 1) Если есть reply и не указан @user — берём из reply
+    # 1) Reply
     if (not reference) and message.reply_to_message:
         return message.reply_to_message.from_user
 
     if not reference:
         return None
 
-    ref = reference.strip()
+    ref = reference.strip().replace("@", "")
 
-    # убираем @ в начале, если есть
-    if ref.startswith("@"):
-        ref = ref[1:]
-
-    # 2) Если это число — считаем, что это user_id
+    # 2) Если число — сразу user_id
     if ref.isdigit():
         try:
-            member = await bot.get_chat_member(message.chat.id, int(ref))
-            return member.user
+            m = await bot.get_chat_member(message.chat.id, int(ref))
+            return m.user
         except:
             return None
 
-    # 3) Пробуем найти по username через get_chat("@username")
+    # 3) Пробуем username через get_chat
     try:
         chat = await bot.get_chat(f"@{ref}")
-        # для пользователей это объект, у которого есть id / full_name / username
-        return chat
+        if chat:
+            return chat
     except:
-        return None
+        pass
+
+    # 4) Последняя попытка — поиск среди последних 200 сообщений
+    try:
+        async for m in bot.get_chat_history(message.chat.id, limit=200):
+            u = m.from_user
+            if u.username and u.username.lower() == ref.lower():
+                return u
+    except:
+        pass
+
+    return None
 
 def in_target_topic(message: Message) -> bool:
     if not message.chat or message.chat.id != CHAT_ID:
