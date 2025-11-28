@@ -480,14 +480,14 @@ async def cmd_passlead(message: Message):
         await maybe_delete_command(message)
         return
 
-    target = parts[1].lower()
+    target = parts[1].replace("@", "").lower()
     try:
         m = await bot.get_chat_member(CHAT_ID, target)
         new_leader = m.user
     except:
         await message.answer("❌ Пользователь не найден.")
-        await maybe_delete_command(message)
         return
+
 
     if not game["active"]:
         await message.answer("⚠️ Игра не идёт.")
@@ -617,13 +617,12 @@ async def cmd_addpoints(message: Message):
         await maybe_delete_command(message)
         return
 
-    target = parts[1].lower()
+    target = parts[1].replace("@", "").lower()
     try:
         m = await bot.get_chat_member(CHAT_ID, target)
         user = m.user
     except:
         await message.answer("❌ Пользователь не найден.")
-        await maybe_delete_command(message)
         return
 
     try:
@@ -656,14 +655,14 @@ async def cmd_delpoints(message: Message):
         await maybe_delete_command(message)
         return
 
-    target = parts[1].lower()
+    target = parts[1].replace("@", "").lower()
     try:
         m = await bot.get_chat_member(CHAT_ID, target)
         user = m.user
     except:
         await message.answer("❌ Пользователь не найден.")
-        await maybe_delete_command(message)
         return
+
 
     try:
         n = int(parts[2])
