@@ -32,10 +32,20 @@ if not BOT_TOKEN:
 SUPER_OFFICER_USERNAME = "@yakovlef"
 SUPER_OFFICER_ID = None
 
-WORDS_FILE = "words.txt"
-USED_WORDS_FILE = "used_words.txt"
-SCORES_FILE = "scores.json"
-STATS_FILE = "stats.json"
+# =========================================================
+#                    ХРАНИЛИЩЕ НА RAILWAY
+# =========================================================
+DATA_DIR = "/app/data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
+WORDS_FILE = f"{DATA_DIR}/words.txt"
+USED_WORDS_FILE = f"{DATA_DIR}/used_words.txt"
+SCORES_FILE = f"{DATA_DIR}/scores.json"
+STATS_FILE = f"{DATA_DIR}/stats.json"
+GUESSED_WORDS_FILE = f"{DATA_DIR}/guessed_words.txt"
+MISSED_WORDS_FILE = f"{DATA_DIR}/missed_words.txt"
+DAILY_STATS_FILE = f"{DATA_DIR}/daily_stats.json"
+
 
 INACTIVITY_HOURS = 3
 
