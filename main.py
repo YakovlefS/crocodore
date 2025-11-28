@@ -219,6 +219,47 @@ def mention_html(user) -> str:
     name = (user.full_name or "игрок").replace("<", "").replace(">", "")
     return f'<a href="tg://user?id={user.id}">{name}</a>'
 
+# ============================================================
+#             ПОИСК ПОЛЬЗОВАТЕЛЯ ПО @username / ID / reply
+# ============================================================
+async def resolve_user(reference: str | None, message: Message):
+    """
+    Универсальный поиск пользователя:
+    • если reference начинается с '@' → пробуем по username
+    • если число → считаем user_id
+    • если пусто, но есть reply → берём из reply
+    • иначе возвращаем None
+    """
+
+    # 1) Если есть reply и не указан @user — берём из reply
+    if (not reference) and message.reply_to_message:
+        return message.reply_to_message.from_user
+
+    if not reference:
+        return None
+
+    ref = reference.strip()
+
+    # убираем @ в начале, если есть
+    if ref.startswith("@"):
+        ref = ref[1:]
+
+    # 2) Если это число — считаем, что это user_id
+    if ref.isdigit():
+        try:
+            member = await bot.get_chat_member(message.chat.id, int(ref))
+            return member.user
+        except:
+            return None
+
+    # 3) Пробуем найти по username через get_chat("@username")
+    try:
+        chat = await bot.get_chat(f"@{ref}")
+        # для пользователей это объект, у которого есть id / full_name / username
+        return chat
+    except:
+        return None
+
 def in_target_topic(message: Message) -> bool:
     if not message.chat or message.chat.id != CHAT_ID:
         return False
@@ -474,20 +515,19 @@ async def cmd_passlead(message: Message):
         await maybe_delete_command(message)
         return
 
-    parts = (message.text or "").split()
+    parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("Использование:\n/passlead @username")
+        await message.answer("Использование:\n/passlead @username (или ответом на сообщение)")
         await maybe_delete_command(message)
         return
 
-    target = parts[1].replace("@", "").lower()
-    try:
-        m = await bot.get_chat_member(CHAT_ID, target)
-        new_leader = m.user
-    except:
-        await message.answer("❌ Пользователь не найден.")
-        return
+    ref = parts[1].strip()
+    new_leader = await resolve_user(ref, message)
 
+    if not new_leader:
+        await message.answer("❌ Пользователь не найден. Попробуй:\n• написать /passlead @username\n• или ответом на сообщение игрока.")
+        await maybe_delete_command(message)
+        return
 
     if not game["active"]:
         await message.answer("⚠️ Игра не идёт.")
@@ -613,16 +653,15 @@ async def cmd_addpoints(message: Message):
 
     parts = (message.text or "").split()
     if len(parts) < 3:
-        await message.answer("Использование:\n/addpoints @user N")
+        await message.answer("Использование:\n/addpoints @user N (или ответом на сообщение)")
         await maybe_delete_command(message)
         return
 
-    target = parts[1].replace("@", "").lower()
-    try:
-        m = await bot.get_chat_member(CHAT_ID, target)
-        user = m.user
-    except:
-        await message.answer("❌ Пользователь не найден.")
+    ref = parts[1]
+    user = await resolve_user(ref, message)
+    if not user:
+        await message.answer("❌ Пользователь не найден. Укажи @username или ответь на сообщение игрока.")
+        await maybe_delete_command(message)
         return
 
     try:
@@ -651,18 +690,16 @@ async def cmd_delpoints(message: Message):
 
     parts = (message.text or "").split()
     if len(parts) < 3:
-        await message.answer("Использование:\n/delpoints @user N")
+        await message.answer("Использование:\n/delpoints @user N (или ответом на сообщение)")
         await maybe_delete_command(message)
         return
 
-    target = parts[1].replace("@", "").lower()
-    try:
-        m = await bot.get_chat_member(CHAT_ID, target)
-        user = m.user
-    except:
-        await message.answer("❌ Пользователь не найден.")
+    ref = parts[1]
+    user = await resolve_user(ref, message)
+    if not user:
+        await message.answer("❌ Пользователь не найден. Укажи @username или ответь на сообщение игрока.")
+        await maybe_delete_command(message)
         return
-
 
     try:
         n = int(parts[2])
