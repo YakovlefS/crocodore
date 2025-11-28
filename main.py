@@ -23,21 +23,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = int(os.getenv("CHAT_ID", "0"))        # id группы
-THREAD_ID = int(os.getenv("THREAD_ID", "0"))    # id нужной темы (message_thread_id)
+CHAT_ID = int(os.getenv("CHAT_ID", "0"))
+THREAD_ID = int(os.getenv("THREAD_ID", "0"))
 
 if not BOT_TOKEN:
     raise SystemExit("Не задан BOT_TOKEN")
 
-SUPER_OFFICER_USERNAME = "@yakovlef"  # единственный супер-офицер
-SUPER_OFFICER_ID = None              # запомним id при первом обращении
+SUPER_OFFICER_USERNAME = "@yakovlef"
+SUPER_OFFICER_ID = None
 
 WORDS_FILE = "words.txt"
 USED_WORDS_FILE = "used_words.txt"
 SCORES_FILE = "scores.json"
 STATS_FILE = "stats.json"
 
-INACTIVITY_HOURS = 3   # через сколько часов бездействия предложить сыграть
+INACTIVITY_HOURS = 3
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -96,7 +96,6 @@ def load_stats():
         "today_guessed": 0,
         "today_date": str(date.today())
     })
-    # если день сменился — обнуляем today
     if stats.get("today_date") != str(date.today()):
         stats["today_date"] = str(date.today())
         stats["today_guessed"] = 0
@@ -110,13 +109,11 @@ used_words: set[str] = load_used_words()
 stats = load_stats()
 
 # ============================================================
-#            ЛОГГИРОВАНИЕ УГАДАННЫХ И ПРОПУЩЕННЫХ СЛОВ
+#            ЛОГИРОВАНИЕ УГАДАННЫХ / ПРОПУЩЕННЫХ
 # ============================================================
-
 GUESSED_WORDS_FILE = "guessed_words.txt"
 MISSED_WORDS_FILE = "missed_words.txt"
 DAILY_STATS_FILE = "daily_stats.json"
-
 
 def load_daily_stats() -> dict:
     try:
@@ -125,179 +122,92 @@ def load_daily_stats() -> dict:
     except:
         return {}
 
-
 def save_daily_stats(stats: dict):
     with open(DAILY_STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
-
 daily_stats = load_daily_stats()
 
-
 def log_guessed(uid: int, word: str):
-    """Записать угаданное слово в файл и статистику."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # лог в файл
     with open(GUESSED_WORDS_FILE, "a", encoding="utf-8") as f:
         f.write(f"{ts} | {uid} | {word}\n")
 
-    # статистика за сутки
     today = datetime.now().strftime("%Y-%m-%d")
     daily_stats.setdefault(today, {})
     daily_stats[today][str(uid)] = daily_stats[today].get(str(uid), 0) + 1
     save_daily_stats(daily_stats)
 
-
 def log_missed(word: str):
-    """Записать пропущенное слово."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open(MISSED_WORDS_FILE, "a", encoding="utf-8") as f:
         f.write(f"{ts} | {word}\n")
 
-
 # ============================================================
-#            ЕЖЕДНЕВНАЯ ОТПРАВКА СТАТИСТИКИ
+#            ЕЖЕДНЕВНАЯ СТАТИСТИКА
 # ============================================================
-
 async def send_daily_stats():
-    """Отправляет статистику за последние сутки."""
     today = datetime.now().strftime("%Y-%m-%d")
     if today not in daily_stats:
         return
 
-    data = daily_stats[today]
     lines = []
-
-    for uid, count in data.items():
+    for uid, count in daily_stats[today].items():
         try:
-            member = await bot.get_chat_member(CHAT_ID, int(uid))
-            name = "@" + member.user.username if member.user.username else member.user.full_name
+            m = await bot.get_chat_member(CHAT_ID, int(uid))
+            name = "@" + m.user.username if m.user.username else m.user.full_name
         except:
             name = f"ID:{uid}"
 
         lines.append(f"{name} — {count}")
 
-    if not lines:
-        return
+    if lines:
+        text = (
+            f"📊 <b>Статистика за день</b>\nДата: {today}\n\n" +
+            "\n".join(lines)
+        )
+        await bot.send_message(CHAT_ID, text)
 
-    text = (
-        f"📊 <b>Статистика за день</b>\n"
-        f"Дата: {today}\n\n"
-        + "\n".join(lines)
-    )
-
-    await bot.send_message(CHAT_ID, text)
-
-    # очищаем статистику следующего дня
     del daily_stats[today]
     save_daily_stats(daily_stats)
 
-# Запускаем ежедневное уведомление (раз в сутки)
 async def daily_scheduler():
     while True:
         now = datetime.now()
         target = now.replace(hour=23, minute=59, second=0, microsecond=0)
-
-        # если время уже прошло — переносим на завтра
         if now > target:
             target += timedelta(days=1)
+        await asyncio.sleep((target - now).total_seconds())
 
-        wait_seconds = (target - now).total_seconds()
-        await asyncio.sleep(wait_seconds)
-
-        # отправляем статистику
         try:
             await send_daily_stats()
         except Exception as e:
             logger.error(f"Ошибка ежедневной статистики: {e}")
 
-
 # =========================================================
-#                      СОСТОЯНИЕ ИГРЫ
+#                     СОСТОЯНИЕ ИГРЫ
 # =========================================================
 game = {
     "active": False,
     "word": None,
     "leader_id": None,
     "attempts": 0,
-    "special": False,         # спец-раунд?
-    "special_reward": 10,     # награда за спец-слово
+    "special": False,
+    "special_reward": 10,
 }
 
 last_activity_ts = datetime.now()
 
 # =========================================================
-#                       ВСПОМОГАТЕЛЬНОЕ
+#                     ВСПОМОГАТЕЛЬНОЕ
 # =========================================================
 def normalize(text: str) -> str:
-    """Нормализация: нижний регистр, ё→е, только буквы."""
     t = text.lower().replace("ё", "е")
     return "".join(ch for ch in t if ch.isalpha())
 
 def mention_html(user) -> str:
     name = (user.full_name or "игрок").replace("<", "").replace(">", "")
     return f'<a href="tg://user?id={user.id}">{name}</a>'
-# ============================================================
-#             ПОИСК ПОЛЬЗОВАТЕЛЯ ПО @username / ID / reply
-# ============================================================
-
-async def resolve_user(reference: str | None, message: Message):
-    """
-    Универсальный поиск пользователя:
-    • если reference начинается с '@' → ищем по username
-    • если число → считаем user_id
-    • если пусто, но есть reply → берём reply
-    • иначе возвращаем None
-    """
-
-    # Если есть reply — всегда приоритетнее
-    if not reference and message.reply_to_message:
-        return message.reply_to_message.from_user
-
-    if not reference:
-        return None
-
-    ref = reference.strip()
-
-    # ========== @username ==========
-    if ref.startswith("@"):
-        username = ref[1:].lower()
-        try:
-            # Сначала ищем среди участников чата
-            members = await bot.get_chat_administrators(message.chat.id)
-        except:
-            members = []
-
-        # Проверка среди админов
-        for m in members:
-            if m.user.username and m.user.username.lower() == username:
-                return m.user
-
-        # Пробуем Telegram API (только для публичных username)
-        try:
-            chat = await bot.get_chat(ref)
-            return chat
-        except:
-            return None
-
-    # ========== username без @ ==========
-    if ref.isalpha():
-        try:
-            chat = await bot.get_chat("@" + ref)
-            return chat
-        except:
-            return None
-
-    # ========== user_id ==========
-    if ref.isdigit():
-        try:
-            member = await bot.get_chat_member(message.chat.id, int(ref))
-            return member.user
-        except:
-            return None
-
-    return None
 
 def in_target_topic(message: Message) -> bool:
     if not message.chat or message.chat.id != CHAT_ID:
@@ -323,7 +233,6 @@ async def is_admin(user_id: int) -> bool:
         return False
 
 async def maybe_delete_command(message: Message):
-    """Удаляем команды из темы, если есть права."""
     try:
         if in_target_topic(message) and message.text and message.text.startswith("/"):
             await message.delete()
@@ -343,9 +252,7 @@ def leader_keyboard(leader_id: int) -> InlineKeyboardMarkup:
         ]
     )
 
-
 def pick_new_word(words: list[str]) -> str | None:
-    """Берём новое слово без повторов."""
     candidates = [w for w in words if w not in used_words]
     if not candidates:
         return None
@@ -359,22 +266,13 @@ def update_activity():
     last_activity_ts = datetime.now()
 
 def detect_root_violation(leader_text: str, answer: str) -> bool:
-    """
-    Простейшая проверка однокоренности:
-    - любое слово из сообщения ведущего длиной >=4
-      если оно равно ответу / входит в ответ / имеет общий префикс >=4.
-    """
     ans = normalize(answer)
-    if not ans:
-        return False
     tokens = [normalize(x) for x in leader_text.split()]
     tokens = [t for t in tokens if len(t) >= 4]
+
     for t in tokens:
-        if t == ans:
+        if t == ans or t in ans or ans in t:
             return True
-        if t in ans or ans in t:
-            return True
-        # общий префикс >=4
         pref = 0
         for a_ch, b_ch in zip(t, ans):
             if a_ch == b_ch:
@@ -386,7 +284,6 @@ def detect_root_violation(leader_text: str, answer: str) -> bool:
     return False
 
 def achievement_for(score: int) -> str | None:
-    """Простые ачивки."""
     milestones = [
         (5, "🥉 Новичок-Угадчик"),
         (10, "🥈 Уверенный Игрок"),
@@ -402,8 +299,8 @@ def achievement_for(score: int) -> str | None:
 async def setup_commands():
     commands = [
         BotCommand(command="startgame", description="Начать игру (становишься ведущим)"),
-        BotCommand(command="restartgame", description="Перезапустить игру (супер/админ)"),
-        BotCommand(command="score", description="Полный рейтинг"),
+        BotCommand(command="restartgame", description="Перезапуск игры"),
+        BotCommand(command="score", description="Рейтинг"),
         BotCommand(command="top", description="Топ-10"),
     ]
     await bot.set_my_commands(commands)
@@ -456,8 +353,7 @@ async def cmd_startgame(message: Message):
     )
 
     await message.answer(
-        f"🎮 Игра началась!\n"
-        f"Ведущий: {mention_html(message.from_user)}",
+        f"🎮 Игра началась!\nВедущий: {mention_html(message.from_user)}",
         reply_markup=leader_keyboard(message.from_user.id)
     )
     await maybe_delete_command(message)
@@ -489,16 +385,14 @@ async def cmd_restartgame(message: Message):
     )
 
     await message.answer(
-        f"♻️ Игра перезапущена!\n"
-        f"Новый ведущий: {mention_html(message.from_user)}",
+        f"♻️ Игра перезапущена!\nНовый ведущий: {mention_html(message.from_user)}",
         reply_markup=leader_keyboard(message.from_user.id)
     )
     await maybe_delete_command(message)
 
 # ============================================================
-#              СПЕЦИАЛЬНОЕ СЛОВО + ДОП.ОЧКИ
+#              СПЕЦ-СЛОВО
 # ============================================================
-
 SPECIAL = {
     "active": False,
     "word": None,
@@ -511,16 +405,8 @@ def normalize_e(text: str) -> str:
 def is_superuser(user):
     return user.username and ("@" + user.username.lower()) == "@yakovlef"
 
-
 @dp.message(Command("special"))
 async def cmd_special(message: Message):
-    """
-    Установка специального слова:
-    /special слово [очки]
-
-    Пример:
-    /special тигр 15
-    """
     if not is_superuser(message.from_user):
         return await message.answer("⛔ Только @yakovlef может задавать специальное слово.")
 
@@ -531,7 +417,6 @@ async def cmd_special(message: Message):
     word = parts[1].strip()
     points = 10
 
-    # Если указано количество баллов
     if len(parts) >= 3 and parts[2].isdigit():
         points = int(parts[2])
 
@@ -542,15 +427,10 @@ async def cmd_special(message: Message):
     await message.answer(
         f"⭐ Специальное слово установлено!\n"
         f"🔤 Слово: <b>{word}</b>\n"
-        f"🏆 Награда за угадывание: <b>{points}</b> очков."
+        f"🏆 Награда: <b>{points}</b> очков."
     )
 
-
 async def check_special_word(message: Message, guess: str):
-    """
-    Проверка специального слова.
-    Возвращает True — если слово угадано и обработано.
-    """
     if not SPECIAL["active"]:
         return False
 
@@ -570,7 +450,9 @@ async def check_special_word(message: Message, guess: str):
 
     return False
 
-
+# ============================================================
+#              ПЕРЕДАЧА ХОДА
+# ============================================================
 @dp.message(Command("passlead"))
 async def cmd_passlead(message: Message):
     if not in_target_topic(message):
@@ -590,10 +472,10 @@ async def cmd_passlead(message: Message):
 
     target = parts[1].lower()
     try:
-        member = await bot.get_chat_member(CHAT_ID, target)
-        new_leader = member.user
+        m = await bot.get_chat_member(CHAT_ID, target)
+        new_leader = m.user
     except:
-        await message.answer("❌ Пользователь не найден в группе.")
+        await message.answer("❌ Пользователь не найден.")
         await maybe_delete_command(message)
         return
 
@@ -610,6 +492,9 @@ async def cmd_passlead(message: Message):
     )
     await maybe_delete_command(message)
 
+# ============================================================
+#                     ПОДСКАЗКА
+# ============================================================
 @dp.message(Command("hint"))
 async def cmd_hint(message: Message):
     if not in_target_topic(message):
@@ -617,18 +502,19 @@ async def cmd_hint(message: Message):
     update_activity()
 
     if not game["active"] or not game["word"]:
-        await message.answer("Сейчас игра не запущена.")
+        await message.answer("Игра не запущена.")
         await maybe_delete_command(message)
         return
 
     if message.from_user.id != game["leader_id"]:
-        await message.answer(f"{mention_html(message.from_user)}, подсказку может давать только ведущий.")
+        await message.answer("⛔ Подсказку может давать только ведущий.")
         await maybe_delete_command(message)
         return
 
     word = game["word"]
     n = len(normalize(word))
     mask = normalize(word)[0] + " " + "_ " * (n - 1)
+
     await message.answer(
         f"💡 Подсказка:\n"
         f"Слово из {n} букв.\n"
@@ -637,6 +523,9 @@ async def cmd_hint(message: Message):
     )
     await maybe_delete_command(message)
 
+# ============================================================
+#                     ДОБАВЛЕНИЕ СЛОВА
+# ============================================================
 @dp.message(Command("addword"))
 async def cmd_addword(message: Message):
     if not in_target_topic(message):
@@ -656,7 +545,7 @@ async def cmd_addword(message: Message):
 
     w = parts[1].strip().lower()
     if len(normalize(w)) < 4 or not normalize(w).isalpha():
-        await message.answer("❌ Слово должно быть реальным и минимум 4 буквы.")
+        await message.answer("❌ Слово должно быть минимум 4 буквы.")
         await maybe_delete_command(message)
         return
 
@@ -672,6 +561,9 @@ async def cmd_addword(message: Message):
     await message.answer(f"✅ Добавлено слово: <b>{w}</b>")
     await maybe_delete_command(message)
 
+# ============================================================
+#                     SAY (ОТ АДМИНА)
+# ============================================================
 @dp.message(Command("say"))
 async def cmd_say(message: Message):
     update_activity()
@@ -686,15 +578,18 @@ async def cmd_say(message: Message):
         await maybe_delete_command(message)
         return
 
-    text_to_send = parts[1]
     await bot.send_message(
         chat_id=CHAT_ID,
         message_thread_id=THREAD_ID if THREAD_ID != 0 else None,
-        text=text_to_send
+        text=parts[1]
     )
-    await message.answer("✅ Сообщение отправлено в тему.")
+
+    await message.answer("✅ Сообщение отправлено.")
     await maybe_delete_command(message)
 
+# ============================================================
+#                ДОБАВЛЕНИЕ / СНЯТИЕ ОЧКОВ
+# ============================================================
 @dp.message(Command("addpoints"))
 async def cmd_addpoints(message: Message):
     if not in_target_topic(message):
@@ -702,7 +597,7 @@ async def cmd_addpoints(message: Message):
     update_activity()
 
     if not is_super(message):
-        await message.answer("⛔ Добавлять очки может только @yakovlef.")
+        await message.answer("⛔ Только @yakovlef.")
         await maybe_delete_command(message)
         return
 
@@ -714,8 +609,8 @@ async def cmd_addpoints(message: Message):
 
     target = parts[1].lower()
     try:
-        member = await bot.get_chat_member(CHAT_ID, target)
-        user = member.user
+        m = await bot.get_chat_member(CHAT_ID, target)
+        user = m.user
     except:
         await message.answer("❌ Пользователь не найден.")
         await maybe_delete_command(message)
@@ -741,7 +636,7 @@ async def cmd_delpoints(message: Message):
     update_activity()
 
     if not is_super(message):
-        await message.answer("⛔ Убирать очки может только @yakovlef.")
+        await message.answer("⛔ Только @yakovlef.")
         await maybe_delete_command(message)
         return
 
@@ -753,8 +648,8 @@ async def cmd_delpoints(message: Message):
 
     target = parts[1].lower()
     try:
-        member = await bot.get_chat_member(CHAT_ID, target)
-        user = member.user
+        m = await bot.get_chat_member(CHAT_ID, target)
+        user = m.user
     except:
         await message.answer("❌ Пользователь не найден.")
         await maybe_delete_command(message)
@@ -773,6 +668,9 @@ async def cmd_delpoints(message: Message):
     await message.answer(f"✅ У {mention_html(user)} снято {n} очк(а). Теперь: {scores[user.id]}")
     await maybe_delete_command(message)
 
+# ============================================================
+#                     ПОЛНЫЙ СБРОС
+# ============================================================
 @dp.message(Command("resetgame"))
 async def cmd_resetgame(message: Message):
     if not in_target_topic(message):
@@ -780,7 +678,7 @@ async def cmd_resetgame(message: Message):
     update_activity()
 
     if not is_super(message):
-        await message.answer("⛔ Сбросить игру может только @yakovlef.")
+        await message.answer("⛔ Только @yakovlef.")
         await maybe_delete_command(message)
         return
 
@@ -791,6 +689,9 @@ async def cmd_resetgame(message: Message):
     await message.answer("♻️ Игра и рейтинг сброшены.")
     await maybe_delete_command(message)
 
+# ============================================================
+#                     РЕЙТИНГИ
+# ============================================================
 @dp.message(Command("score"))
 async def cmd_score(message: Message):
     if not in_target_topic(message):
@@ -817,7 +718,7 @@ async def cmd_score(message: Message):
         medal = medals[i-1] if i <= 3 else "•"
         lines.append(f"{medal} {i}. <b>{name}</b> — {pts}")
 
-    await message.answer("📊 <b>Общий рейтинг:</b>\n" + "\n".join(lines))
+    await message.answer("📊 <b>Рейтинг:</b>\n" + "\n".join(lines))
     await maybe_delete_command(message)
 
 @dp.message(Command("top"))
@@ -849,44 +750,23 @@ async def cmd_top(message: Message):
     await message.answer("🏆 <b>Топ-10 игроков:</b>\n" + "\n".join(lines))
     await maybe_delete_command(message)
 
-# =========================================================
-#                 CALLBACK-КНОПКИ ВЕДУЩЕГО
-#  Доступ: только текущий ведущий ИЛИ @yakovlef
-# =========================================================
+# ============================================================
+#           CALLBACK-КНОПКИ (показ/замена/подсказка)
+# ============================================================
 @dp.callback_query()
 async def callbacks(call: CallbackQuery):
     if not call.message or not in_target_topic(call.message):
         return
+
     if not game["active"] or not game["leader_id"]:
         await call.answer("Игра сейчас не запущена.", show_alert=True)
         return
 
-    if action == "hint":
-    # только ведущий и супер-офицер
-    if call.from_user.id != game["leader_id"] and not is_super_user(call.from_user):
-        return await call.answer("⛔ Только ведущий.", show_alert=True)
-
-    word = game["word"]
-    if len(word) <= 2:
-        mask = word[0] + " _"
-    else:
-        mask = word[0] + " " + "_ " * (len(word) - 1)
-
-    await call.message.answer(
-        f"💡 Подсказка:\n"
-        f"Слово из {len(word)} букв.\n"
-        f"Начинается на <b>{word[0].upper()}</b>\n"
-        f"<code>{mask}</code>"
-    )
-
-    return await call.answer("Подсказка отправлена!")
-
-
     data = call.data or ""
     if ":" not in data:
         return
-    action, leader_id_str = data.split(":", 1)
 
+    action, leader_id_str = data.split(":", 1)
     try:
         leader_id = int(leader_id_str)
     except:
@@ -894,76 +774,78 @@ async def callbacks(call: CallbackQuery):
 
     allowed = (call.from_user.id == game["leader_id"]) or is_super(call)
     if not allowed or leader_id != game["leader_id"]:
-        await call.answer("⛔ Только ведущий", show_alert=True)
-        return
+        return await call.answer("⛔ Только ведущий", show_alert=True)
 
+    # ------------------ SHOW ------------------
     if action == "show":
-        await call.answer(f"Твоё слово: {game['word']}", show_alert=True)
+        return await call.answer(f"Слово: {game['word']}", show_alert=True)
 
-    elif action == "replace":
-        if game["special"]:
-            # в спец-режиме смена слова разрешена только супер-офицеру
-            if not is_super(call):
-                await call.answer("⛔ В спец-раунде смена слова только для @yakovlef.", show_alert=True)
-                return
-            # спец-слово меняем просто на новое спец из текста нельзя — просим /special
-            await call.answer("ℹ️ Для смены спец-слова используй /special <слово>.", show_alert=True)
-            return
-
+    # ------------------ REPLACE ------------------
+    if action == "replace":
         words = load_words_list()
         w = pick_new_word(words)
         if not w:
-            await call.answer("Слова закончились!", show_alert=True)
-            return
+            return await call.answer("Слова закончились!", show_alert=True)
+
         game["word"] = w
         game["attempts"] = 0
-        await call.answer(f"Новое слово: {w}", show_alert=True)
+        return await call.answer(f"Новое слово: {w}", show_alert=True)
 
-    elif action == "pass":
+    # ------------------ HINT ------------------
+    if action == "hint":
+        word = game["word"]
+        n = len(word)
+        mask = word[0] + " " + "_ " * (n - 1)
+
+        await call.message.answer(
+            f"💡 Подсказка:\n"
+            f"Слово из {n} букв.\n"
+            f"Начинается на <b>{word[0].upper()}</b>\n"
+            f"<code>{mask}</code>"
+        )
+        return await call.answer("Подсказка отправлена!")
+
+    # ------------------ PASS ------------------
+    if action == "pass":
         await call.message.answer("Чтобы передать ход:\n/passlead @username")
-        await call.answer()
+        return await call.answer()
 
-    elif action == "stop":
+    # ------------------ STOP ------------------
+    if action == "stop":
         if not is_super(call):
-            await call.answer("⛔ Остановить игру может только @yakovlef.", show_alert=True)
-            return
+            return await call.answer("⛔ Только @yakovlef.", show_alert=True)
+
         game.update(active=False, word=None, leader_id=None, attempts=0, special=False)
         await call.message.answer("⛔ Игра остановлена.")
-        await call.answer("Остановлено.")
+        return await call.answer("Остановлено.")
 
-# =========================================================
-#               ОБРАБОТКА СООБЩЕНИЙ (ИГРА)
-# - угадывание без reply
-# - штраф ведущему за однокоренные/подсказки
-# =========================================================
+# ============================================================
+#                   ГЛАВНЫЙ GAME LOOP
+# ============================================================
 @dp.message()
 async def on_guess(message: Message):
     if not in_target_topic(message):
         return
-
     update_activity()
 
-    # если игра не активна — просто выходим
     if not game["active"] or not game["word"]:
         return
+    if not message.text:
+        return
 
-    # штраф за «однокоренные» / подсказки от ведущего
+    # ведущий — проверка подсказок, штраф
     if message.from_user.id == game["leader_id"]:
-        if message.text and detect_root_violation(message.text, game["word"]):
-            # штрафные очки ведущему: -1 (не ниже 0)
+        if detect_root_violation(message.text, game["word"]):
             lid = game["leader_id"]
             scores[lid] = max(0, scores.get(lid, 0) - 1)
             save_scores(scores)
+
             await message.answer(
-                f"⚠️ {mention_html(message.from_user)}, штраф -1 очко за однокоренное/подсказку!"
+                f"⚠️ {mention_html(message.from_user)}, штраф -1 очко за подсказку."
             )
         return
-        
 
-    if not message.text:
-        return
-        
-        # проверка специального слова
+    # спец-слово
     if await check_special_word(message, message.text):
         return
 
@@ -973,14 +855,11 @@ async def on_guess(message: Message):
     if not guess:
         return
 
-    # при спец-слове можно засчитывать вхождение (на случай фраз)
-    is_correct = (guess == answer) or (answer in guess)
-
-    if not is_correct:
+    if guess != answer and answer not in guess:
         game["attempts"] += 1
         return
 
-    # ========= УГАДАЛ =========
+    # УГАДАНО!
     user = message.from_user
     uid = user.id
 
@@ -988,13 +867,11 @@ async def on_guess(message: Message):
     scores[uid] = scores.get(uid, 0) + reward
     save_scores(scores)
 
-    # статистика угадываний
-    stats["total_guessed"] = int(stats.get("total_guessed", 0)) + 1
-    stats["today_guessed"] = int(stats.get("today_guessed", 0)) + 1
+    stats["total_guessed"] += 1
+    stats["today_guessed"] += 1
     stats["today_date"] = str(date.today())
     save_stats(stats)
 
-    # похвала + ачивка
     ach = achievement_for(scores[uid])
     praise = random.choice([
         "Красавчик! 😎",
@@ -1005,29 +882,25 @@ async def on_guess(message: Message):
     ])
 
     text = (
-        f"🎉 {mention_html(user)} угадал(а) слово <b>{game['word']}</b>!\n"
+        f"🎉 {mention_html(user)} угадал слово <b>{game['word']}</b>!\n"
         f"{praise}\n"
-        f"💎 +{reward} очк(а). Теперь у тебя: <b>{scores[uid]}</b>"
+        f"💎 +{reward} очк(а). Теперь: <b>{scores[uid]}</b>"
     )
     if ach:
-        text += f"\n🏅 <b>Ачивка получена:</b> {ach}"
+        text += f"\n🏅 Ачивка получена: {ach}"
 
     await message.answer(text)
 
-    # если это был спец-раунд — он заканчивается, дальше обычный раунд
     if game["special"]:
         game.update(active=False, word=None, leader_id=None, attempts=0, special=False)
-        await message.answer("⭐ Спец-раунд завершён! Для продолжения жми /startgame.")
-        return
+        return await message.answer("⭐ Спец-раунд завершён! Жми /startgame.")
 
-    # передаём ход угадчику
     words = load_words_list()
     new_word = pick_new_word(words)
 
     if not new_word:
         game.update(active=False, word=None, leader_id=None, attempts=0, special=False)
-        await message.answer("🎉 Все слова закончились! Игра остановлена.")
-        return
+        return await message.answer("🎉 Все слова закончились! Игра остановлена.")
 
     game.update(
         leader_id=uid,
@@ -1040,15 +913,13 @@ async def on_guess(message: Message):
         reply_markup=leader_keyboard(uid)
     )
 
-# =========================================================
-#               ФОНОВЫЕ ЗАДАЧИ
-# =========================================================
+# ============================================================
+#                   BACKGROUND TASKS
+# ============================================================
 async def daily_report_loop():
-    """Раз в день пишет супер-офицеру сколько слов угадали за день."""
     global SUPER_OFFICER_ID
     while True:
         try:
-            # ждём до 21:00 серверного времени
             now = datetime.now()
             target = datetime.combine(now.date(), time(21, 0))
             if now >= target:
@@ -1059,20 +930,16 @@ async def daily_report_loop():
             if SUPER_OFFICER_ID:
                 await bot.send_message(
                     chat_id=SUPER_OFFICER_ID,
-                    text=f"📌 За сегодня угадано слов: <b>{stats_local.get('today_guessed',0)}</b>"
+                    text=f"📌 За сегодня угадано: <b>{stats_local.get('today_guessed',0)}</b>"
                 )
 
-            # обнуляем today
             stats_local["today_guessed"] = 0
             stats_local["today_date"] = str(date.today())
             save_stats(stats_local)
-
-        except Exception as e:
-            logger.warning(f"daily_report_loop error: {e}")
+        except:
             await asyncio.sleep(60)
 
 async def inactivity_loop():
-    """Если >3 часов нет активности и игра не идёт — предложить сыграть."""
     global last_activity_ts
     while True:
         await asyncio.sleep(60)
@@ -1084,20 +951,19 @@ async def inactivity_loop():
                 await bot.send_message(
                     chat_id=CHAT_ID,
                     message_thread_id=THREAD_ID if THREAD_ID != 0 else None,
-                    text="🐊 Давно не играли! Может сыграем в Крокодила? Жми /startgame 😄"
+                    text="🐊 Давно не играли! Жми /startgame 😄"
                 )
                 last_activity_ts = datetime.now()
-        except Exception as e:
-            logger.warning(f"inactivity_loop error: {e}")
+        except:
+            await asyncio.sleep(60)
 
-# =========================================================
-#                       ЗАПУСК
-# =========================================================
+# ============================================================
+#                          ЗАПУСК
+# ============================================================
 async def main():
-    logger.info("✅ Бот запущен и готов к работе.")
+    logger.info("✅ Бот запущен")
     await setup_commands()
 
-    # запускаем фоновые задачи
     asyncio.create_task(daily_report_loop())
     asyncio.create_task(inactivity_loop())
 
